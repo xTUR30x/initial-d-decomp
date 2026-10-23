@@ -14,7 +14,8 @@
 #
 #   Paleta OBJ 16 colores   0x080A5934   32 bytes
 #   Paleta OBJ 16 colores   0x080A5954   32 bytes
-#   Paleta BG  256 colores  0x080A5B74  512 bytes
+#   Paleta BG  256 colores  0x080A5974  512 bytes  (FUN_08028D60 -> DMA3 a 0x05000000)
+#   Paleta OBJ 256 colores  0x080A5B74  512 bytes  (DMA3 a 0x05000200)
 #   Stream 4bpp #1          0x080A6174  1204 bytes  (cabecera 4 B + 600 words)
 #   Stream 4bpp #2          0x080A6628  1204 bytes
 #   Stream 8bpp             0x080A6ADC  1202 bytes  (cabecera 2 B + 600 words)
@@ -43,7 +44,9 @@ PAL_OBJ_A_ADDR = 0x080A5934
 PAL_OBJ_A_SIZE = 32
 PAL_OBJ_B_ADDR = 0x080A5954
 PAL_OBJ_B_SIZE = 32
-PAL_BG_ADDR = 0x080A5B74
+PAL_MAIN_ADDR = 0x080A5974      # paleta que FUN_08028D60 encola -> 0x05000000
+PAL_MAIN_SIZE = 512
+PAL_BG_ADDR = 0x080A5B74        # paleta copiada por el handler -> 0x05000200
 PAL_BG_SIZE = 512
 
 STREAM1_ADDR = 0x080A6174
@@ -140,7 +143,9 @@ def emit_header(path, n4, n8, sizes):
 // Origen: baserom.gba (SHA-256 %s).
 //
 // Contiene:
-//   * las 3 paletas que el estado 0 copia por DMA3 a PAL RAM,
+//   * las 4 paletas del estado 0 (2 OBJ de 16 colores, la principal de 256
+//     colores que el motor copia por DMA3 a 0x05000000 y la de la region OBJ
+//     que el handler copia a 0x05000200),
 //   * los 3 streams de tiles comprimidos (4bpp, 4bpp, 8bpp),
 //   * los bloques de los pools de tiles que esos streams referencian.
 //
@@ -164,7 +169,8 @@ typedef struct {
 // Paletas del estado 0.
 extern const u8 g_intro_pal_obj_a[%d];
 extern const u8 g_intro_pal_obj_b[%d];
-extern const u8 g_intro_pal_bg[%d];
+extern const u8 g_intro_pal_main[%d];   // 0x080A5974 -> 0x05000000 (BG0 8bpp)
+extern const u8 g_intro_pal_bg[%d];     // 0x080A5B74 -> 0x05000200 (region OBJ)
 
 // Streams de tiles comprimidos (cabecera + entradas).
 extern const u8 g_intro_stream1[%d];
@@ -177,7 +183,7 @@ extern const IntroPoolRange g_intro_pool8_ranges[INTRO_POOL8_RANGE_COUNT];
 
 #endif // GUARD_INTRO_ASSETS_H
 """ % (ROM_SHA256, n4, n8,
-       sizes["pal_a"], sizes["pal_b"], sizes["pal_bg"],
+       sizes["pal_a"], sizes["pal_b"], sizes["pal_main"], sizes["pal_bg"],
        sizes["s1"], sizes["s2"], sizes["s3"]))
 
 
@@ -191,6 +197,7 @@ def main():
     # --- Paletas -------------------------------------------------------------
     pal_a = rom.read(PAL_OBJ_A_ADDR, PAL_OBJ_A_SIZE)
     pal_b = rom.read(PAL_OBJ_B_ADDR, PAL_OBJ_B_SIZE)
+    pal_main = rom.read(PAL_MAIN_ADDR, PAL_MAIN_SIZE)
     pal_bg = rom.read(PAL_BG_ADDR, PAL_BG_SIZE)
 
     # --- Streams -------------------------------------------------------------
@@ -249,6 +256,7 @@ def main():
 
     emit_bytes(out, "g_intro_pal_obj_a", pal_a)
     emit_bytes(out, "g_intro_pal_obj_b", pal_b)
+    emit_bytes(out, "g_intro_pal_main", pal_main)
     emit_bytes(out, "g_intro_pal_bg", pal_bg)
     emit_bytes(out, "g_intro_stream1", stream1)
     emit_bytes(out, "g_intro_stream2", stream2)
@@ -271,7 +279,8 @@ def main():
     out.append("")
 
     sizes = {
-        "pal_a": len(pal_a), "pal_b": len(pal_b), "pal_bg": len(pal_bg),
+        "pal_a": len(pal_a), "pal_b": len(pal_b), "pal_main": len(pal_main),
+        "pal_bg": len(pal_bg),
         "s1": len(stream1), "s2": len(stream2), "s3": len(stream3),
     }
 
@@ -281,7 +290,7 @@ def main():
         fh.write("\n".join(out))
     emit_header(h_path, len(ranges4), len(ranges8), sizes)
 
-    total = (len(pal_a) + len(pal_b) + len(pal_bg)
+    total = (len(pal_a) + len(pal_b) + len(pal_main) + len(pal_bg)
              + len(stream1) + len(stream2) + len(stream3)
              + total4 + total8)
     print("[assets] generado %s (%d bytes de datos)" % (c_path, total))

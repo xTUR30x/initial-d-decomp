@@ -19,9 +19,25 @@
 #include "graphics.h"
 #include "audio.h"
 #include "memory.h"
+#include "fade.h"
 #include "states.h"
 
 #include <stddef.h>   // NULL
+
+// ------------------------------------------------------------------------------
+// Registro de los bloques de ROM que el motor resuelve por direccion
+// ------------------------------------------------------------------------------
+// La cola de paletas (fade.c) recibe una direccion ROM y necesita el puntero
+// al array embebido en PC. En GBA hw_rom_register no hace nada.
+static void intro_register_rom_assets(void)
+{
+    static bool registered = false;
+
+    if (!registered) {
+        hw_rom_register(INTRO_ROM_PAL_MAIN, g_intro_pal_main);
+        registered = true;
+    }
+}
 
 // ------------------------------------------------------------------------------
 // Resolucion de los pools de tiles
@@ -72,9 +88,7 @@ void intro_common_init(void)
     hw_mem_write32(0x030044F0u, 0u);
 
     // FUN_08028D7C: BLDY = 16, BLDCNT = 0x00FF y PALRAM[0] = 0.
-    hw_gfx_reg_write16(REG_BLDY, 16u);
-    hw_gfx_reg_write16(REG_BLDCNT, 0x00FFu);
-    hw_mem_write16(GBA_PALRAM_BASE, 0u);
+    fade_reset();
 
     // FUN_08026074: limpia la VRAM completa (0x1800 bloques de 16 bytes).
     hw_memzero_blocks(BOOT_CLEAR_VRAM_BASE, BOOT_CLEAR_VRAM_WORDS);
@@ -97,26 +111,27 @@ void intro_common_init(void)
     hw_mem_write32(0x030044BCu, 0u);
     hw_mem_write32(0x030044C0u, 0u);
 
-    // FUN_08028DA4: BLDY = 16, BLDCNT = 0x00FF y bytes del descriptor de
-    // objeto en 0x030044D8 (+0x0C = 1, +0x0D = 2, +0x0E = 2, +0x0F = 16).
-    hw_gfx_reg_write16(REG_BLDY, 16u);
-    hw_mem_write8(OBJECT_DESC_ADDR + 0x0Fu, 16u);
-    hw_gfx_reg_write16(REG_BLDCNT, 0x00FFu);
-    hw_mem_write8(OBJECT_DESC_ADDR + 0x0Cu, 1u);
-    hw_mem_write8(OBJECT_DESC_ADDR + 0x0Du, 2u);
-    hw_mem_write8(OBJECT_DESC_ADDR + 0x0Eu, 2u);
+    // FUN_08028DA4: BLDY = 16, BLDCNT = 0x00FF y estado 1 de la maquina de
+    // fundidos (+0x0C = 1, +0x0D = 2, +0x0E = 2, +0x0F = 16).
+    fade_out_all();
 }
 
 // ------------------------------------------------------------------------------
-// Actualizacion comun (FUN_08540B7C)
+// Espera de frame del estado 0 (FUN_08540B7C)
 // ------------------------------------------------------------------------------
-// Rutina del modulo de carrera (0x0854xxxx) que actualiza los objetos de
-// fondo ya registrados. No es codigo de la pantalla de intro sino del motor
-// compartido, asi que en este port queda como un punto de extension
-// documentado: el estado 0 solo necesita el montaje estatico de la pantalla.
+// Verificado con objdump: 0x08540B7C es ARM (`stmfd sp!, {lr}`) y 0x08540B80
+// es un bucle de espera de frame (llama a 0x080003E8 / 0x0802F354 / 0x080260A0
+// / 0x080004AC y termina con `ldmfd sp!, {pc}` en 0x08540B94). NO es Thumb y
+// NO escribe BLD.
+//
+// El estado 0 la llama tras cada bloque de montaje (0x080A5370, 0x080A53B8 y
+// 0x080A5424), una vez por frame en el original. En el port el ritmo de frames
+// lo marca la plataforma (bucle SDL en PC, busy loop en GBA), y el tick del
+// motor de fundidos (equivalente al VBlank) se ejecuta alli; aqui no se
+// duplica para no avanzar BLDY varias veces por frame.
 void intro_common_update(void)
 {
-    // TODO: portar FUN_08540b7c (actualizacion de los objetos de fondo).
+    // Sin trabajo adicional: la espera de frame la hace la plataforma.
 }
 
 // ------------------------------------------------------------------------------
@@ -131,39 +146,14 @@ void intro_common_block(void)
     // 0x080A53D0: stream 8bpp -> mapa 0x0600F800, tiles de 64 bytes.
     graphics_load_tiles8(g_intro_stream3, INTRO_TILEMAP_ADDR, 1u, intro_pool8_ptr);
 
-    // 0x080A53D8: registra el descriptor del objeto de fondo.
-    graphics_register_object(INTRO_ROM_OBJ_DESC);
+    // 0x080A53D8: pide al motor de fundidos la copia de la paleta principal
+    // (0x080A5974, 256 colores) a 0x05000000. La ejecuta el VBlank siguiente
+    // (FUN_08028AC4), igual que en el cartucho.
+    fade_palette_dma_request(INTRO_ROM_PAL_MAIN);
 
-    // 0x080A53E4: DMA3 de la paleta BG (256 colores) a 0x05000200.
+    // 0x080A53E4: DMA3 de la paleta de 256 colores de la region OBJ
+    // (0x080A5B74) a 0x05000200.
     hw_gfx_dma3_copy(g_intro_pal_bg, GBA_PALRAM_BASE + 0x200u, 128u);
-
-#ifndef TARGET_GBA
-    // ---------------------------------------------------------------------
-    // Espejo de la paleta de 256 colores (solo en el port PC).
-    //
-    // La capa de 8bpp del Estado 0 la dibuja la ROM por software: el "objeto
-    // de fondo" que registra FUN_08028D60 (descriptor 0x080A5974) usa la
-    // paleta de 256 colores que la ROM copia a 0x05000200 (region OBJ). Un BG
-    // del hardware GBA, en cambio, solo puede leer su paleta en 0x05000000
-    // (region de fondos), donde la ROM dejo la paleta B de 16 colores de las
-    // capas 4bpp (0x080A5394).
-    //
-    // El port PC no ejecuta los callbacks OBJ (0x080A5580 / 0x080A55EC /
-    // 0x080A547C: codigo ARM de la ROM), asi que la unica capa que se puede
-    // dibujar es el fondo 0. Para que muestre los colores reales del logo se
-    // copian los 512 bytes de la paleta de 256 colores a la region de fondos,
-    // y el renderizador lee 0x05000000 por defecto en 8bpp.
-    //
-    // En el target GBA NO se hace: el cartucho no espeja nada y el hardware
-    // leeria la paleta B de 16 colores (fondo negro + logo en cian/gris/blanco).
-    // ---------------------------------------------------------------------
-    {
-        const u8 *src = hw_mem_region_ptr(GBA_PALRAM_BASE + 0x200u);
-        if (src != NULL) {
-            hw_mem_write_block(GBA_PALRAM_BASE, src, 512u);
-        }
-    }
-#endif
 
     // 0x080A5408: DISPCNT = 0x1140 (modo 0, OBJ 1D mapping, BG0 activa).
     hw_gfx_reg_write16(REG_DISPCNT, 0x1140u);
@@ -186,6 +176,9 @@ void intro_common_block(void)
 // ------------------------------------------------------------------------------
 void intro_state_body(void)
 {
+    // Resuelve la paleta principal para la cola de DMA del motor de fundidos.
+    intro_register_rom_assets();
+
     // 0x080A52E4: *0x030027AC = 0 (el handler se reindexa a si mismo).
     states_set_current(0);
 

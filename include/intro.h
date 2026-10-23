@@ -32,8 +32,10 @@
 //   0x080A53B8  bl 0x08540B7C
 //   0x080A53BC  bl 0x080A5188                       ; BLOQUE COMUN (cada vuelta)
 //   0x080A53D0  bl 0x08000E74 (stream 8bpp, r1=0x080A6ADC)
-//   0x080A53D8  bl 0x08028D60 (r3=0x080A5974)       ; objeto de fondo
-//   0x080A53E4  DMA3 0x080A5B74 -> 0x05000200 (128 palabras) ; paleta BG
+//   0x080A53D8  bl 0x08028D60 (r3=0x080A5974)       ; peticion de DMA de paleta
+//                                                     (el VBlank la copia a
+//                                                      0x05000000)
+//   0x080A53E4  DMA3 0x080A5B74 -> 0x05000200 (128 palabras) ; paleta OBJ
 //   0x080A5408  DISPCNT = 0x1140
 //   0x080A5410  BG0CNT  = 0x1F80
 //   0x080A5418  bl 0x080AF768 (r4=0x080A547C)       ; callback OBJ #3
@@ -48,11 +50,13 @@
 // ------------------------------------------------------------------------------
 #define INTRO_ROM_PAL_OBJ_A   0x080A5934u  // paleta OBJ, 16 colores (32 bytes)
 #define INTRO_ROM_PAL_OBJ_B   0x080A5954u  // paleta OBJ, 16 colores (32 bytes)
-#define INTRO_ROM_PAL_BG      0x080A5B74u  // paleta BG, 256 colores (512 bytes)
+#define INTRO_ROM_PAL_MAIN    0x080A5974u  // paleta principal, 256 colores (512 B)
+                                           // FUN_08028D60 -> DMA3 -> 0x05000000
+#define INTRO_ROM_PAL_BG      0x080A5B74u  // paleta de la region OBJ (512 B)
+                                           // DMA3 -> 0x05000200
 #define INTRO_ROM_STREAM1     0x080A6174u  // stream 4bpp (cabecera 4 B + 600)
 #define INTRO_ROM_STREAM2     0x080A6628u  // stream 4bpp (cabecera 4 B + 600)
 #define INTRO_ROM_STREAM3     0x080A6ADCu  // stream 8bpp (cabecera 2 B + 600)
-#define INTRO_ROM_OBJ_DESC    0x080A5974u  // descriptor del objeto de fondo
 #define INTRO_ROM_CB_OBJ1     0x080A5580u  // callback de dibujado OBJ #1
 #define INTRO_ROM_CB_OBJ2     0x080A55ECu  // callback de dibujado OBJ #2
 #define INTRO_ROM_CB_OBJ3     0x080A547Cu  // callback de dibujado OBJ #3
@@ -82,7 +86,8 @@ void intro_common_block(void);
 // Portado de FUN_080A5188: inicializacion comun del motor de pantallas.
 void intro_common_init(void);
 
-// Portado de FUN_08540B7C: actualizacion comun (graficos de fondo).
+// Portado de FUN_08540B7C: espera de frame del estado 0 (ARM; 0x08540B80 es un
+// bucle de sincronizacion, no Thumb). El ritmo de frames lo marca la plataforma.
 void intro_common_update(void);
 
 // Resolucion de un desplazamiento dentro de los pools de tiles originales.

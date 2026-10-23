@@ -10,7 +10,7 @@
 //   * VRAM  (0x06000000)       -> tilemap (entradas de 16 bits) y tiles
 //                                  (32 bytes en 4bpp, 64 bytes en 8bpp)
 //   * PAL RAM (0x05000000)     -> paletas BGR555 de la capa
-//   * REG_BLDCNT/BLDY         -> modulacion de brillo (fundido/aclarado)
+//   * REG_BLDCNT/BLDALPHA/BLDY -> modulacion de brillo y mezcla alpha
 //
 // El resultado indexado se convierte a ARGB8888 en tiempo real y se presenta
 // como textura escalada (nearest neighbour) en la ventana de SDL2.
@@ -18,7 +18,7 @@
 // Teclas:
 //   P -> cambia la region de paleta de la capa 8bpp (0x05000200 <-> 0x05000000)
 //   M -> fuerza la interpretacion 4bpp del BG0 (para comparar con el 8bpp)
-//   B -> override de depuracion del BLD (normal / oscurecer / aclarar / nada)
+//   B -> override de depuracion del BLD (normal / oscurecer / aclarar / alpha / nada)
 //   S -> guarda una captura BMP del framebuffer
 //   ESC -> salir
 //
@@ -27,8 +27,8 @@
 //   --hold                      no deja que el modo demostracion avance de estado
 //   --palette-obj               usa la paleta 0x05000200 (region OBJ) en la capa 8bpp
 //   --4bpp                      fuerza la interpretacion 4bpp del fondo 0
-//   --bld <none|brighten|darken|auto>
-//                               override de BLDCNT/BLDY (auto = los del juego)
+//   --bld <none|brighten|darken|alpha|auto>
+//                               override de BLDCNT/BLDALPHA/BLDY (auto = los del juego)
 // ==============================================================================
 
 #include <SDL2/SDL.h>
@@ -41,6 +41,7 @@
 #include "states.h"
 #include "graphics.h"
 #include "memory.h"
+#include "fade.h"
 
 #define GBA_SCREEN_WIDTH  240
 #define GBA_SCREEN_HEIGHT 160
@@ -55,13 +56,15 @@
 //   0x05000200 -> paleta de OBJ
 //
 // Un BG del GBA SIEMPRE lee su paleta en 0x05000000: es la unica region que
-// el hardware consulta para un fondo. Por eso el renderizador usa por defecto
-// 0x05000000 tambien para la capa 8bpp del Estado 0, que es lo que se veria
-// en el hardware real.
+// el hardware consulta para un fondo. Por eso el renderizador lee ahi.
 //
-// La Region 0x05000200 queda disponible para comparar (tecla P): es donde la
-// ROM copia la paleta de 256 colores del Estado 0 (0x080A53E4: DMA3 ->
-// 0x05000200, 128 palabras), una paleta que el BG0 del hardware nunca leeria.
+// En el Estado 0, la ROM deja en cada region:
+//   0x05000000 -> 0x080A5974 (256 colores), copiada por la cola de paletas
+//                 del motor de VBlank: 0x080A53D8 llama a FUN_08028D60 con
+//                 r3 = 0x080A5974 y FUN_08028AC4 hace el DMA3 en el VBlank.
+//   0x05000200 -> 0x080A5B74 (256 colores), DMA3 directo en 0x080A53E4.
+//
+// La region 0x05000200 queda disponible para comparar (tecla P).
 // ------------------------------------------------------------------------------
 #define PALRAM_BG_BASE   0x05000000u
 #define PALRAM_OBJ_BASE  0x05000200u
@@ -74,10 +77,11 @@ static u32  s_palette_base = PALRAM_BG_BASE;   // region de paleta de la capa
 static bool s_force_4bpp    = false;            // override de la interpretacion
 static int  s_bld_override  = 0;                // 0 = usar los registros del juego
                                                  // 1 = sin efecto, 2 = aclarar,
-                                                 // 3 = oscurecer
+                                                 // 3 = oscurecer, 4 = alpha
 static u16  s_last_dispcnt  = 0xFFFFu;
 static u16  s_last_bg0cnt   = 0xFFFFu;
 static u16  s_last_bldcnt   = 0xFFFFu;
+static u16  s_last_bldalpha = 0xFFFFu;
 static u16  s_last_bldy     = 0xFFFFu;
 
 // ==============================================================================
@@ -107,7 +111,7 @@ static u32 bgr555_to_argb(u16 color)
 }
 
 // ==============================================================================
-// Unidad de blend del GBA (BLDCNT / BLDY)
+// Unidad de blend del GBA (BLDCNT / BLDALPHA / BLDY)
 // ==============================================================================
 //
 // REG_BLDCNT (0x04000050):
@@ -115,98 +119,112 @@ static u32 bgr555_to_argb(u16 color)
 //   bits 6-7  : modo (0 = sin efecto, 1 = alpha, 2 = aclarar, 3 = oscurecer)
 //   bits 8-13 : segundos objetivos (8=BG0, 9=BG1, 10=BG2, 11=BG3, 12=OBJ, 13=fondo)
 //   bit  14   : sprites alojados en la VRAM de OBJ
-// REG_BLDY (0x04000054): nivel de brillo (0 = negro, 16 = normal, 31 = blanco)
+// REG_BLDALPHA (0x04000052): EVA en los bits 0-4 y EVB en los bits 8-12 (0..16)
+// REG_BLDY     (0x04000054): nivel de brillo (0..16)
 //
-// Semantica implementada (la misma del hardware):
-//   modo 3 (oscurecer): el color se multiplica por BLDY/16   (solo si BLDY < 16)
-//   modo 2 (aclarar)  : el color se mezcla con el blanco en (BLDY-16)/15
-//   modo 1 (alpha)    : el 1er objetivo se mezcla con el 2o (o con el fondo)
-//   BLDY = 16         : brillo normal, sin modulacion en los modos 2 y 3
+// Semantica implementada (GBATEK, "4000054h - BLDY - Brightness (Y)
+// coefficient"; EVY = nivel/16):
+//   modo 2 (increase): I = I + (31-I)*EVY   -> 8 bits: C + (255-C)*nivel/16
+//   modo 3 (decrease): I = I - I*EVY        -> 8 bits: C * (16-nivel)/16
+//   modo 1 (alpha)   : C_sup*EVA/16 + C_inf*EVB/16 (EVA/EVB con clamp a 16)
 //
-// Valores reales del Estado 0 (medidos en la ROM, ver AGENTS.md):
-//   FUN_08028D7C -> BLDY = 16, BLDCNT = 0x00FF
-//     0x00FF = objetivos 0x3F (todos) + modo 3 (oscurecer) + 2o objetivo BG0.
-//     Con BLDY = 16 el modo "oscurecer" no atenua (16/16 = 1.0), asi que la
-//     imagen no cambia: el fundido real lo hace el motor bajando BLDY por
-//     frame, y ese codigo por frame todavia no esta portado.
-//   FUN_08028DA4 -> los mismos BLDY/BLDCNT (0x10 / 0x00FF).
+// Por tanto nivel = 16 es el efecto MAXIMO (negro en modo 3, blanco en modo 2)
+// y nivel = 0 es "sin efecto". Esto es lo que usan los estados del motor
+// FUN_08028AC4: el estado 1 arranca en BLDY = 16 (negro) y BAJA hasta 0, es
+// decir, es un fundido de entrada desde negro (0x08028DA4). El estado 2 sube
+// de 0 a 16 y es un fundido de salida a negro (0x08028FA4).
+//
+// En los modos 2 y 3 solo cuenta el 1er objetivo (el 2o se ignora). En el modo
+// 1 el 1er objetivo es la capa superior y el 2o la capa inferior.
+//
+// Valores reales del Estado 0 (medidos en la ROM):
+//   FUN_08028D7C / FUN_08028DA4 -> BLDY = 16, BLDCNT = 0x00FF
+//     0x00FF = objetivos 0x3F (todos) + modo 3 (oscurecer) + sin 2o objetivo.
+//     Con BLDY = 16 la pantalla queda NEGRA y el motor la va aclarando al
+//     bajar BLDY hasta 0 (fundido de entrada, src/fade.c). Al terminar deja
+//     BLDCNT = 0x0F40 (modo alpha sin 1er objetivo = inerte) y BLDY = 0.
+//   BLDALPHA no se escribe en el Estado 0; el motor lo deja en 0x0808 al
+//   terminar un fundido (estados 1/3/5) y en 0x1010 en el estado 8.
 // ==============================================================================
 
 #define BLD_TARGET_BG0      0x01u   // bit 0 de cada conjunto de objetivos
 #define BLD_TARGET_BACKDROP 0x20u   // bit 5 de cada conjunto de objetivos
 
-// Mezcla un canal entre "propio" (el pixel) y "otro" (el objetivo contrario).
-static u32 bld_blend_channel(u32 own, u32 other, u16 bldy)
+// Nivel de BLDY efectivo: el hardware solo usa 0..16.
+static u32 bld_level(u16 bldy)
 {
-    if (bldy == 0u) {
-        return other;                                     // 100% del contrario
-    }
-    if (bldy == 16u) {
-        return own;                                       // 100% propio
-    }
-    if (bldy < 16u) {
-        return (own * bldy + other * (16u - bldy)) / 16u;  // contra el fondo
-    }
-    // BLDY > 16: mezcla con el blanco, peso (BLDY-16)/15.
-    return (own * (31u - bldy) + 255u * (bldy - 16u)) / 15u;
+    return (bldy > 16u) ? 16u : (u32)bldy;
 }
 
-// Aplica la modulacion BLD a un pixel ARGB8888.
-//   is_bg0 : true si el pixel pertenece a la capa BG0, false si es el fondo
-static u32 bld_apply(u32 argb, bool is_bg0, u16 bldcnt, u16 bldy, u32 backdrop)
+// Canal alpha: capa superior * EVA + capa inferior * EVB, ambos sobre 16.
+static u32 bld_alpha_channel(u32 top, u32 bottom, u32 eva, u32 evb)
+{
+    u32 v = top * eva + bottom * evb;
+    v /= 16u;
+    return (v > 255u) ? 255u : v;
+}
+
+// Aplica el blend a un pixel ARGB8888.
+//   top      : color del pixel de la capa que se esta dibujando
+//   top_t    : objetivo BLD de esa capa (BG0 o fondo)
+//   bottom   : color de la capa inferior (solo se usa en modo alpha)
+//   bottom_t : objetivo BLD de la capa inferior
+static u32 bld_apply(u32 top, u32 top_t, u32 bottom, u32 bottom_t,
+                     u16 bldcnt, u16 bldalpha, u16 bldy)
 {
     const u32 mode = (bldcnt >> 6) & 3u;
     if (mode == 0u) {
-        return argb;   // modo 0 = sin efecto
+        return top;   // modo 0 = sin efecto
     }
 
     const u32 first_mask  = bldcnt & 0x3Fu;
     const u32 second_mask = (bldcnt >> 8) & 0x3Fu;
-    const u32 my_target   = is_bg0 ? BLD_TARGET_BG0 : BLD_TARGET_BACKDROP;
 
-    const bool in_first  = (first_mask & my_target) != 0u;
-    const bool in_second = (second_mask & my_target) != 0u;
+    u32 r = (top >> 16) & 0xFFu;
+    u32 g = (top >> 8) & 0xFFu;
+    u32 b = top & 0xFFu;
 
-    u32 r = (argb >> 16) & 0xFFu;
-    u32 g = (argb >> 8) & 0xFFu;
-    u32 b = argb & 0xFFu;
+    if (mode == 2u || mode == 3u) {
+        // Brillo: el hardware solo modula el 1er objetivo.
+        if ((first_mask & top_t) == 0u) {
+            return top;
+        }
 
-    switch (mode) {
-        case 2u: {   // Aclarar: hacia el blanco con el peso (BLDY-16)/15.
-            if (bldy <= 16u || (!in_first && !in_second)) {
-                break;
-            }
-            const u32 w = (u32)(bldy - 16u);   // 1..15
-            r = r + (255u - r) * w / 15u;
-            g = g + (255u - g) * w / 15u;
-            b = b + (255u - b) * w / 15u;
-            break;
+        const u32 level = bld_level(bldy);
+
+        // nivel 0 = sin efecto en ambos modos; nivel 16 = efecto maximo.
+        if (level == 0u) {
+            return top;
         }
-        case 3u: {   // Oscurecer: multiplicar el color por BLDY/16.
-            if (bldy >= 16u || (!in_first && !in_second)) {
-                break;
-            }
-            r = r * bldy / 16u;
-            g = g * bldy / 16u;
-            b = b * bldy / 16u;
-            break;
+
+        if (mode == 3u) {
+            // Decrease (GBATEK): I = I - I*EVY, negro con nivel 16.
+            const u32 keep = 16u - level;
+            r = r * keep / 16u;
+            g = g * keep / 16u;
+            b = b * keep / 16u;
+        } else {
+            // Increase (GBATEK): I = I + (31-I)*EVY, blanco con nivel 16.
+            r = r + (255u - r) * level / 16u;
+            g = g + (255u - g) * level / 16u;
+            b = b + (255u - b) * level / 16u;
         }
-        default: {  // 1 = alpha blending: 1er objetivo contra 2o objetivo.
-            if (in_first == in_second) {
-                break;   // el pixel es solo de un objetivo, o de los dos
-            }
-            // Color del objetivo contrario: el fondo si su conjunto lo incluye.
-            // Si el contrario es la propia capa BG0, el resultado no cambia.
-            const u32 other = (is_bg0 ? ((second_mask & BLD_TARGET_BACKDROP) != 0u)
-                                     : ((first_mask & BLD_TARGET_BACKDROP) != 0u))
-                             ? backdrop
-                             : argb;
-            r = bld_blend_channel(r, (other >> 16) & 0xFFu, bldy);
-            g = bld_blend_channel(g, (other >> 8) & 0xFFu, bldy);
-            b = bld_blend_channel(b, other & 0xFFu, bldy);
-            break;
-        }
+
+        return 0xFF000000u | (r << 16) | (g << 8) | b;
     }
+
+    // Modo 1 (alpha): 1er objetivo = capa superior, 2o = capa inferior.
+    if ((first_mask & top_t) == 0u || (second_mask & bottom_t) == 0u) {
+        return top;
+    }
+
+    const u32 eva = (bldalpha & 0x1Fu) > 16u ? 16u : (bldalpha & 0x1Fu);
+    const u32 evb = ((bldalpha >> 8) & 0x1Fu) > 16u ? 16u
+                                                   : ((bldalpha >> 8) & 0x1Fu);
+
+    r = bld_alpha_channel(r, (bottom >> 16) & 0xFFu, eva, evb);
+    g = bld_alpha_channel(g, (bottom >> 8) & 0xFFu, eva, evb);
+    b = bld_alpha_channel(b, bottom & 0xFFu, eva, evb);
 
     return 0xFF000000u | (r << 16) | (g << 8) | b;
 }
@@ -251,24 +269,33 @@ static u32 bg0_map_entry_addr(u32 screen_base, u32 tx, u32 ty)
 
 // Registros de blend efectivos. El override de depuracion (tecla B) sustituye
 // los valores que escribio el juego para poder ver la modulacion en pantalla.
-static void bld_effective_regs(u16 *bldcnt, u16 *bldy)
+static void bld_effective_regs(u16 *bldcnt, u16 *bldalpha, u16 *bldy)
 {
     switch (s_bld_override) {
         case 1:   // sin efecto
-            *bldcnt = 0x0000u;
-            *bldy   = 16u;
+            *bldcnt   = 0x0000u;
+            *bldalpha = 0x0000u;
+            *bldy     = 16u;
             break;
-        case 2:   // aclarar (modo 2, objetivo BG0)
-            *bldcnt = 0x0081u;
-            *bldy   = 24u;
+        case 2:   // aclarar (modo 2, 1er objetivo BG0), 50% hacia blanco
+            *bldcnt   = 0x0081u;
+            *bldalpha = 0x0000u;
+            *bldy     = 8u;
             break;
-        case 3:   // oscurecer (modo 3, objetivo BG0)
-            *bldcnt = 0x00C1u;
-            *bldy   = 8u;
+        case 3:   // oscurecer (modo 3, 1er objetivo BG0), 50% hacia negro
+            *bldcnt   = 0x00C1u;
+            *bldalpha = 0x0000u;
+            *bldy     = 8u;
+            break;
+        case 4:   // alpha: BG0 (superior) sobre el fondo, EVA = EVB = 8
+            *bldcnt   = 0x2041u;   // 1er obj BG0, modo 1, 2o obj fondo
+            *bldalpha = 0x0808u;
+            *bldy     = 16u;
             break;
         default:
-            *bldcnt = hw_gfx_reg_read16(REG_BLDCNT);
-            *bldy   = hw_gfx_reg_read16(REG_BLDY);
+            *bldcnt   = hw_gfx_reg_read16(REG_BLDCNT);
+            *bldalpha = hw_gfx_reg_read16(REG_BLDALPHA);
+            *bldy     = hw_gfx_reg_read16(REG_BLDY);
             break;
     }
 }
@@ -279,25 +306,30 @@ static void render_bg0(void)
     const u16 dispcnt = hw_gfx_reg_read16(REG_DISPCNT);
     const u16 bg0cnt  = hw_gfx_reg_read16(REG_BG0CNT);
 
-    // Modulacion de brillo (BLDCNT / BLDY).
-    u16 bldcnt, bldy;
-    bld_effective_regs(&bldcnt, &bldy);
+    // Modulacion de brillo y alpha (BLDCNT / BLDALPHA / BLDY).
+    u16 bldcnt, bldalpha, bldy;
+    bld_effective_regs(&bldcnt, &bldalpha, &bldy);
 
     // Traza por consola cuando cambian los registros de video o de blend.
     if (dispcnt != s_last_dispcnt || bg0cnt != s_last_bg0cnt ||
-        bldcnt != s_last_bldcnt || bldy != s_last_bldy) {
-        s_last_dispcnt = dispcnt;
-        s_last_bg0cnt  = bg0cnt;
-        s_last_bldcnt  = bldcnt;
-        s_last_bldy    = bldy;
+        bldcnt != s_last_bldcnt || bldalpha != s_last_bldalpha ||
+        bldy != s_last_bldy) {
+        s_last_dispcnt  = dispcnt;
+        s_last_bg0cnt   = bg0cnt;
+        s_last_bldcnt   = bldcnt;
+        s_last_bldalpha = bldalpha;
+        s_last_bldy     = bldy;
         printf("[render] DISPCNT=0x%04X  BG0CNT=0x%04X  (modo %u, %s, %s)\n",
                (unsigned)dispcnt, (unsigned)bg0cnt,
                (unsigned)(dispcnt & 7u),
                ((bg0cnt & 0x00C0u) == 0x0080u) ? "8bpp" : "4bpp",
                ((dispcnt & 0x0080u) != 0u) ? "forced blank"
                                            : ((dispcnt & 0x0100u) != 0u) ? "BG0 on" : "BG0 off");
-        printf("[render] BLDCNT=0x%04X (modo %u)  BLDY=%u\n",
-               (unsigned)bldcnt, (unsigned)((bldcnt >> 6) & 3u), (unsigned)bldy);
+        printf("[render] BLDCNT=0x%04X (modo %u)  BLDALPHA=0x%04X (EVA=%u EVB=%u)  BLDY=%u\n",
+               (unsigned)bldcnt, (unsigned)((bldcnt >> 6) & 3u),
+               (unsigned)bldalpha,
+               (unsigned)(bldalpha & 0x1Fu), (unsigned)((bldalpha >> 8) & 0x1Fu),
+               (unsigned)bldy);
     }
 
     const u32 pixels = (u32)GBA_SCREEN_WIDTH * GBA_SCREEN_HEIGHT;
@@ -315,7 +347,9 @@ static void render_bg0(void)
 
     // Sin BG0 (o sin OBJ) solo se ve el fondo.
     if ((dispcnt & 0x0100u) == 0u) {
-        const u32 bg = bld_apply(backdrop, false, bldcnt, bldy, backdrop);
+        const u32 bg = bld_apply(backdrop, BLD_TARGET_BACKDROP,
+                                 backdrop, BLD_TARGET_BACKDROP,
+                                 bldcnt, bldalpha, bldy);
         for (u32 i = 0; i < pixels; i++) {
             s_framebuffer[i] = bg;
         }
@@ -329,12 +363,10 @@ static void render_bg0(void)
     const bool bpp8 = (((bg0cnt & 0x00C0u) == 0x0080u) && !s_force_4bpp);
     const u32  tile_size = bpp8 ? 64u : 32u;
 
-    // La paleta de 16 colores vive en la region BG; la de 256, en la que la
-    // ROM copio para el Estado 0 (0x05000200).
     // La paleta de 16 colores (4bpp) siempre vive en la region BG. La de 256
     // colores (8bpp) se lee tambien en la region BG por defecto, que es lo
     // que haria el hardware; con la tecla P se puede cambiar a la region OBJ
-    // (0x05000200) para comparar con la paleta que copio la ROM.
+    // (0x05000200) para comparar con la paleta 0x080A5B74.
     const u32 pal_base = bpp8 ? s_palette_base : PALRAM_BG_BASE;
 
     for (u32 py = 0; py < GBA_SCREEN_HEIGHT; py++) {
@@ -367,16 +399,17 @@ static void render_bg0(void)
             }
 
             u32 argb;
-            bool is_bg0_pixel = true;
             if (!bpp8 && color_index == 0u) {
-                argb = backdrop;    // el indice 0 es transparente en 4bpp
-                is_bg0_pixel = false;   // se ve el fondo, no la capa BG0
+                // 4bpp: el indice 0 es transparente, se ve el fondo (backdrop).
+                argb = bld_apply(backdrop, BLD_TARGET_BACKDROP,
+                                 backdrop, BLD_TARGET_BACKDROP,
+                                 bldcnt, bldalpha, bldy);
             } else {
-                argb = bgr555_to_argb(hw_mem_read16(pal_base + color_index * 2u));
+                const u32 layer = bgr555_to_argb(hw_mem_read16(pal_base + color_index * 2u));
+                argb = bld_apply(layer, BLD_TARGET_BG0,
+                                 backdrop, BLD_TARGET_BACKDROP,
+                                 bldcnt, bldalpha, bldy);
             }
-
-            // Modulacion de brillo del hardware (BLDCNT / BLDY).
-            argb = bld_apply(argb, is_bg0_pixel, bldcnt, bldy, backdrop);
 
             s_framebuffer[py * GBA_SCREEN_WIDTH + px] = argb;
         }
@@ -531,16 +564,16 @@ static void draw_status_bar(SDL_Renderer *renderer)
     const u16 bg0cnt  = hw_gfx_reg_read16(REG_BG0CNT);
     const bool bpp8 = (((bg0cnt & 0x00C0u) == 0x0080u) && !s_force_4bpp);
 
-    u16 bldcnt, bldy;
-    bld_effective_regs(&bldcnt, &bldy);
+    u16 bldcnt, bldalpha, bldy;
+    bld_effective_regs(&bldcnt, &bldalpha, &bldy);
 
     char text[96];
-    snprintf(text, sizeof(text), "STATE %02u  %04X  %04X  %s  %06X  BLD %u %02X",
+    snprintf(text, sizeof(text), "STATE %02u  %04X  %04X  %s  %06X  BLD %u %02X %04X",
              (unsigned)states_get_current(),
              (unsigned)dispcnt, (unsigned)bg0cnt,
              bpp8 ? "8BPP" : "4BPP",
              (unsigned)(bpp8 ? s_palette_base : PALRAM_BG_BASE),
-             (unsigned)((bldcnt >> 6) & 3u), (unsigned)bldy);
+             (unsigned)((bldcnt >> 6) & 3u), (unsigned)bldy, (unsigned)bldalpha);
 
     draw_text(renderer, 6, bar_y + 3, 2, text, 200, 210, 230);
 }
@@ -599,20 +632,22 @@ int main(int argc, char *argv[])
                 s_bld_override = 2;
             } else if (strcmp(mode, "darken") == 0) {
                 s_bld_override = 3;
+            } else if (strcmp(mode, "alpha") == 0) {
+                s_bld_override = 4;
             } else if (strcmp(mode, "auto") == 0) {
                 s_bld_override = 0;
             } else {
-                printf("modo de BLD desconocido: %s (none|brighten|darken|auto)\n", mode);
+                printf("modo de BLD desconocido: %s (none|brighten|darken|alpha|auto)\n", mode);
                 return 1;
             }
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("uso: %s [--screenshot <archivo.bmp>] [--hold] [--palette-obj] [--4bpp]"
-                   " [--bld none|brighten|darken|auto]\n", argv[0]);
+                   " [--bld none|brighten|darken|alpha|auto]\n", argv[0]);
             printf("  --screenshot  renderiza unos frames y guarda una captura BMP\n");
             printf("  --hold        mantiene el estado actual (no barre los 44 estados)\n");
             printf("  --palette-obj usa la paleta 0x05000200 (region OBJ) en la capa 8bpp\n");
             printf("  --4bpp        fuerza la interpretacion 4bpp del fondo 0\n");
-            printf("  --bld <modo>  override de BLDCNT/BLDY (auto = usar los del juego)\n");
+            printf("  --bld <modo>  override de BLDCNT/BLDALPHA/BLDY (auto = los del juego)\n");
             return 0;
         } else {
             printf("opcion desconocida: %s (use --help)\n", argv[i]);
@@ -700,15 +735,17 @@ int main(int argc, char *argv[])
                         break;
                     case SDLK_b:
                         // Override de depuracion del BLD: normal -> oscurecer
-                        // -> aclarar -> sin efecto -> normal.
+                        // -> aclarar -> alpha -> sin efecto -> normal.
                         s_bld_override = (s_bld_override == 0) ? 3
                                        : (s_bld_override == 3) ? 2
-                                       : (s_bld_override == 2) ? 1 : 0;
+                                       : (s_bld_override == 2) ? 4
+                                       : (s_bld_override == 4) ? 1 : 0;
                         printf("[render] BLD: %s\n",
                                (s_bld_override == 0) ? "registros del juego"
                                : (s_bld_override == 1) ? "sin efecto"
-                               : (s_bld_override == 2) ? "aclarar (BLDY=24)"
-                                                     : "oscurecer (BLDY=8)");
+                               : (s_bld_override == 2) ? "aclarar (BLDY=8)"
+                               : (s_bld_override == 3) ? "oscurecer (BLDY=8)"
+                                                       : "alpha (EVA=EVB=8)");
                         break;
                     case SDLK_s:
                         save_bmp("captura.bmp");
@@ -719,11 +756,14 @@ int main(int argc, char *argv[])
             }
         }
 
-        // 1) Maquina de estados: un paso por frame (equivalente a un frame
+        // 1) VBlank: motor de fundidos y cola de paletas (FUN_08028AC4).
+        fade_frame_update();
+
+        // 2) Maquina de estados: un paso por frame (equivalente a un frame
         //    del bucle cooperativo del cartucho).
         states_tick();
 
-        // 2) Render del estado emulado del video.
+        // 3) Render del estado emulado del video.
         render_bg0();
 
         if (texture != NULL) {

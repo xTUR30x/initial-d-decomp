@@ -111,6 +111,18 @@ u8 hw_mem_read8(u32 addr)  { return *(const vu8 *)addr; }
 u16 hw_mem_read16(u32 addr) { return *(const vu16 *)addr; }
 u32 hw_mem_read32(u32 addr) { return *(const vu32 *)addr; }
 
+// La ROM del cartucho esta mapeada en 0x08000000: la direccion es valida tal cual.
+void hw_rom_register(u32 rom_addr, const void *host_ptr)
+{
+    (void)rom_addr;
+    (void)host_ptr;
+}
+
+const void *hw_rom_ptr(u32 rom_addr)
+{
+    return (const void *)(uintptr_t)rom_addr;
+}
+
 #else // ===================== PC / SDL2 =====================
 
 #include <string.h>
@@ -218,6 +230,51 @@ u32 hw_mem_read32(u32 addr)
 {
     const u8 *p = hw_mem_region_ptr(addr);
     return (p != NULL) ? *(const u32 *)p : 0u;
+}
+
+// ------------------------------------------------------------------------------
+// Bloques de la ROM embebidos en el binario.
+//
+// Solo se registran los bloques que el codigo portable necesita resolver por
+// direccion ROM (hoy: la paleta principal del Estado 0). La tabla es pequena y
+// se recorre linealmente; registrar dos veces la misma direccion actualiza el
+// puntero.
+// ------------------------------------------------------------------------------
+
+#define HW_ROM_BLOCK_MAX 8u
+
+typedef struct {
+    u32         rom_addr;
+    const void *host_ptr;
+} HwRomBlock;
+
+static HwRomBlock g_rom_blocks[HW_ROM_BLOCK_MAX];
+
+void hw_rom_register(u32 rom_addr, const void *host_ptr)
+{
+    for (u32 i = 0; i < HW_ROM_BLOCK_MAX; i++) {
+        if (g_rom_blocks[i].rom_addr == rom_addr) {
+            g_rom_blocks[i].host_ptr = host_ptr;
+            return;
+        }
+    }
+    for (u32 i = 0; i < HW_ROM_BLOCK_MAX; i++) {
+        if (g_rom_blocks[i].rom_addr == 0u) {
+            g_rom_blocks[i].rom_addr = rom_addr;
+            g_rom_blocks[i].host_ptr = host_ptr;
+            return;
+        }
+    }
+}
+
+const void *hw_rom_ptr(u32 rom_addr)
+{
+    for (u32 i = 0; i < HW_ROM_BLOCK_MAX; i++) {
+        if (g_rom_blocks[i].rom_addr == rom_addr) {
+            return g_rom_blocks[i].host_ptr;
+        }
+    }
+    return NULL;
 }
 
 #endif // TARGET_GBA

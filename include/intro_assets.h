@@ -10,7 +10,9 @@
 // Origen: baserom.gba (SHA-256 b1684b7d6a678189011bb607e9f2c23febe5b9062303e8afe56cba43246a1592).
 //
 // Contiene:
-//   * las 3 paletas que el estado 0 copia por DMA3 a PAL RAM,
+//   * las 4 paletas del estado 0 (2 OBJ de 16 colores, la principal de 256
+//     colores que el motor copia por DMA3 a 0x05000000 y la de la region OBJ
+//     que el handler copia a 0x05000200),
 //   * los 3 streams de tiles comprimidos (4bpp, 4bpp, 8bpp),
 //   * los bloques de los pools de tiles que esos streams referencian.
 //
@@ -34,7 +36,8 @@ typedef struct {
 // Paletas del estado 0.
 extern const u8 g_intro_pal_obj_a[32];
 extern const u8 g_intro_pal_obj_b[32];
-extern const u8 g_intro_pal_bg[512];
+extern const u8 g_intro_pal_main[512];   // 0x080A5974 -> 0x05000000 (BG0 8bpp)
+extern const u8 g_intro_pal_bg[512];     // 0x080A5B74 -> 0x05000200 (region OBJ)
 
 // Streams de tiles comprimidos (cabecera + entradas).
 extern const u8 g_intro_stream1[1204];

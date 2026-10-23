@@ -11,11 +11,13 @@
 // "fuera de pantalla" en cada entrada de 8 bytes.
 //
 // Ademas incorpora las piezas de video que necesita el Estado 0 (intro/logo):
-//   * escritura de registros de E/S (DISPCNT, BGxCNT, BLDCNT/BLDY),
+//   * escritura de registros de E/S (DISPCNT, BGxCNT, BLDCNT/BLDALPHA/BLDY),
 //   * transferencias DMA3 (paletas y tiles) con el valor literal 0x8400,
 //   * los dos descompresores de tiles de la ROM (4bpp y 8bpp),
-//   * el registro de callbacks de OBJ (FUN_080af768) y de objeto de fondo
-//     (FUN_08028d60).
+//   * el registro de callbacks de OBJ (FUN_080af768).
+//
+// La cola de peticiones de paleta (FUN_08028d60) y su ejecucion por VBlank
+// (FUN_08028ac4) forman parte del motor de fundidos: ver include/fade.h.
 // ==============================================================================
 
 // OAM del GBA: 128 entradas de 8 bytes (attr0/attr1/attr2/padding).
@@ -46,6 +48,7 @@
 #define REG_BG2CNT       0x0400000Cu
 #define REG_BG3CNT       0x0400000Eu
 #define REG_BLDCNT       0x04000050u  // control de blend
+#define REG_BLDALPHA     0x04000052u  // coeficientes alpha (EVA/EVB)
 #define REG_BLDY         0x04000054u  // intensidad de blend
 #define REG_DMA3SAD      0x040000D4u  // origen del DMA3
 #define REG_DMA3DAD      0x040000D8u  // destino del DMA3
@@ -62,9 +65,6 @@
 #define OBJ_SLOT_TABLE_ADDR  0x03002080u
 #define OBJ_SLOT_COUNT       16u
 #define OBJ_SLOT_SIZE        0x60u
-
-// Descriptores del objeto de fondo (FUN_08028d60).
-#define OBJECT_DESC_ADDR     0x030044D8u
 
 // ------------------------------------------------------------------------------
 // Capa de plataforma (implementado en cada target: GBA y PC/SDL2)
@@ -122,9 +122,6 @@ void graphics_load_tiles8(const u8 *stream, u32 dst_map, u32 first_slot,
 // Portado de FUN_080af768: registra un callback de OBJ en el primer slot
 // libre de la tabla de 0x03002080. Devuelve el slot o NULL si esta llena.
 u8 *graphics_register_obj_callback(u32 callback);
-
-// Portado de FUN_08028d60: registra el descriptor del objeto de fondo.
-void graphics_register_object(u32 desc);
 
 #ifndef TARGET_GBA
 // Solo PC: volcado de depuracion del estado simulado de la OAM.

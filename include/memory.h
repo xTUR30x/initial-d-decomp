@@ -67,6 +67,19 @@ u16 hw_mem_read16(u32 addr);
 u32 hw_mem_read32(u32 addr);
 
 // ------------------------------------------------------------------------------
+// Bloques de la ROM embebidos en el binario
+// ------------------------------------------------------------------------------
+// El port no carga baserom.gba en runtime: los assets que necesita el codigo
+// portable se embeben como arrays. Estas funciones traducen una direccion de
+// la ROM (0x08xxxxxx) al puntero del array equivalente.
+//
+// En GBA no hace falta registro: hw_rom_ptr devuelve la propia direccion,
+// porque la ROM del cartucho esta mapeada en 0x08000000. En PC se registra
+// cada bloque con hw_rom_register y hw_rom_ptr devuelve NULL si no se registro.
+void hw_rom_register(u32 rom_addr, const void *host_ptr);
+const void *hw_rom_ptr(u32 rom_addr);
+
+// ------------------------------------------------------------------------------
 // API de memoria (implementado en src/memory.c)
 // ------------------------------------------------------------------------------
 

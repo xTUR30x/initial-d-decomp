@@ -42,6 +42,7 @@
 #include "states.h"
 #include "memory.h"
 #include "intro.h"
+#include "fade.h"
 
 #include <stddef.h>   // NULL
 
@@ -527,6 +528,10 @@ static void gba_delay_frame(void)
 void hw_state_frame_wait(void)
 {
     gba_delay_frame();
+
+    // Equivalente al VBlank del cartucho (hasta que se porte IntrMain): el
+    // motor de fundidos y la cola de paletas avanzan una vez por frame.
+    fade_frame_update();
 }
 
 void hw_state_frame_delay(void)

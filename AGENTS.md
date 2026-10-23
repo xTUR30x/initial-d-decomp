@@ -93,10 +93,10 @@ Beware: Ghidra pseudocode of the boot entry is misleading and was corrected belo
 | `FUN_080A52E4` (Estado 0) | `src/intro.c` (`intro_state_body`) | Lógica/Gráficos/Audio | Intro/logo: monta paletas por DMA3, descomprime tiles 4bpp/8bpp, registra callbacks OBJ y arranca el BGM pista 1. Flag de "ya inicializado" en `0x030047AC`. |
 | `FUN_0854C5B8` / `FUN_08000E88` | `src/graphics.c` (`graphics_load_tiles4/8`) | Gráficos/VRAM | Descompresores de tiles de la ROM (32 B/tile en 4bpp, 64 B/tile en 8bpp). Cabecera leída una sola vez; celda `word==0` vacía; entrada de mapa = `slot + ((word & 0x8000) >> 5)` (+ `ip << 12` en 4bpp); el cursor de mapa avanza 64 B por fila (30 celdas escritas de 32). |
 | `FUN_080AF768` | `src/graphics.c` (`graphics_register_obj_callback`) | Gráficos/OBJ | Tabla de 16 slots de 0x60 B en `0x03002080`; busca el 1º libre, escribe callback en `+0x00`, `+0x10/+0x14 = 0x10000` y pone a 0 el resto **excepto `+0x1C`** (la ROM no lo escribe). |
-| `FUN_08028D60` | `src/graphics.c` (`graphics_register_object`) | Gráficos/OBJ | `*(0x030044D8) = 0x100`, `*(0x030044DC) = 0`, `*(0x030044E0) = descriptor`. |
+| `FUN_08028AC4` + `FUN_08028D60`..`0x08029030` | `src/fade.c` (`fade_frame_update` + API `fade_*`) | Gráficos/BLD + Paletas | Motor de fundidos que corre en el VBlank (`0x08000BC4`): ejecuta la cola de paletas por DMA3 (`FUN_08028D60`) y avanza la máquina de estados del descriptor `0x030044D8` (8 estados). Ver "Motor de fundidos y cola de paletas". |
 | `FUN_0800055C` / `FUN_080005D4` | `src/audio.c` (`audio_bgm_play/stop`) | Audio | Selector de BGM: tabla de 12 descriptores en ROM `0x080005A4`; "pista actual" en `0x030027B4`; handle del driver `0x03007B60`. `movs r4,r4` solo actualiza flags (**no** trunca a 16 bits): el puntero de canción es completo. |
-| `FUN_080A5188` | `src/intro.c` (`intro_common_init`) | Lógica/Gráficos | Init común: `FUN_0800048C` (2 palabras a 0), `FUN_08028D7C` (BLDY=16, BLDCNT=0x00FF, PALRAM[0]=0), `FUN_08026074` (borra VRAM 96 KB), `FUN_08000FE8` (`*(0x030027D8)=0`), `FUN_0802F2DC` (19 slots × 0x60 + 9 palabras a 0), `FUN_08028DA4` (BLDY/BLDCNT + bytes `+0x0C..+0x0F` del descriptor). |
-| `FUN_08540B7C` | `src/intro.c` (`intro_common_update`) | Lógica | Update común del módulo de carrera: **stub documentado** (no es código de la pantalla de intro). |
+| `FUN_080A5188` | `src/intro.c` (`intro_common_init`) | Lógica/Gráficos | Init común: `FUN_0800048C` (2 palabras a 0), `FUN_08028D7C` (`fade_reset`: BLDY=16, BLDCNT=0x00FF, PALRAM[0]=0), `FUN_08026074` (borra VRAM 96 KB), `FUN_08000FE8` (`*(0x030027D8)=0`), `FUN_0802F2DC` (19 slots × 0x60 + 9 palabras a 0), `FUN_08028DA4` (`fade_out_all`: estado 1, frames/timer 2). |
+| `FUN_08540B7C` | `src/intro.c` (`intro_common_update`) | Lógica | **Espera de frame** del estado 0, no una "actualización común". Verificado con objdump: `0x08540B7C` es ARM (`stmfd sp!, {lr}`) y `0x08540B80` es un bucle de sincronización (`0x080003E8` / `0x0802F354` / `0x080260A0` / `0x080004AC`, `ldmfd sp!, {pc}` en `0x08540B94`). **No es Thumb y no escribe BLD.** En el port el ritmo de frames lo marca la plataforma y el tick del motor de fundidos vive en ella. |
 | — (nuevo en PC) | `src/pc_main.c` (`render_bg0`) | Gráficos/Render | Renderizador de video del port PC: reproduce el BG0 del GBA desde `DISPCNT`/`BG0CNT` + VRAM + PAL RAM y convierte indexado → ARGB8888. Ver "Modelo de video medido del fondo 0". |
 
 ### Memoria mapeada (nueva capa)
@@ -106,6 +106,7 @@ Beware: Ghidra pseudocode of the boot entry is misleading and was corrected belo
 - PC: buffer virtual (IWRAM alta `0x03002080`..`0x03007EF0`, VRAM 96 KB, PAL RAM 1 KB).
 
 API: `hw_mem_region_ptr`, `hw_mem_write8/16/32`, `hw_mem_write_block`, `hw_mem_read8/16/32`.
+Además, `hw_rom_register(rom_addr, host_ptr)` / `hw_rom_ptr(rom_addr)` traducen una dirección de la ROM a un array embebido: en GBA no hacen nada (la ROM está mapeada en `0x08000000`) y en PC usan una tabla estática de 8 bloques (hoy solo la paleta principal del Estado 0).
 **Fuente única de verdad**: el índice de estado (`0x030027AC`) y la solicitud pendiente (`0x03004A5C`) ya no tienen buffers propios en `states.c`; se acceden con `hw_mem_read32`/`hw_mem_write32`.
 
 ### Estado 0 — intro/logo (`0x080A52E4`)
@@ -132,7 +133,7 @@ Flujo verificado (objdump):
 0x080A53BC  BLOQUE COMUN (cada iteracion):
 0x080A53BC  bl 0x080A5188
 0x080A53D0  bl 0x08000E74 (r1=0x080A6ADC, sl=1)     ; stream 8bpp
-0x080A53D8  bl 0x08028D60 (r3=0x080A5974)           ; objeto de fondo
+0x080A53D8  bl 0x08028D60 (r3=0x080A5974)           ; peticion de paleta (cola del VBlank)
 0x080A53E4  DMA3 0x080A5B74 -> 0x05000200, CNT_L=0x80, CNT_H=0x8400 ; paleta 256 col. (region OBJ)
 0x080A5408  DISPCNT = 0x1140
 0x080A5410  BG0CNT  = 0x1F80
@@ -144,7 +145,8 @@ Flujo verificado (objdump):
 ```
 
 - **Cada `bl 0x080A5188` borra la tabla de slots OBJ**, así que los 3 callbacks terminan registrados uno tras otro en el slot 0: el estado final solo conserva el callback #3 (`0x080A547C`). El port reproduce ese efecto (cada `intro_common_init()` limpia los 19 slots).
-- **`PALRAM[0]` queda a 0**: `FUN_08028D7C` lo pone a 0 en cada init común, y la última llamada ocurre *después* de la copia de la paleta OBJ B.
+- **La paleta del fondo 0 se pide por cola, no por DMA directo**: `0x080A53D8` llama a `FUN_08028D60` con `r3 = 0x080A5974`, que escribe `count = 0x100` halfwords, destino `0` y origen en el descriptor `0x030044D8`. La copia real la hace `FUN_08028AC4` en el **VBlank** (DMA3 `0x080A5974` → `0x05000000`). La copia `0x080A5B74` → `0x05000200` de `0x080A53E4` es la **región OBJ** (128 palabras).
+- **`PALRAM[0]` queda a 0 en el momento del render**: `FUN_08028D7C` (`fade_reset`) lo pone a 0 en cada init común, y ese init corre *después* de la cola de paleta de la iteración anterior. La entrada 0 de `0x080A5974` es `0x03E0` (verde), pero en 8bpp no hay píxeles transparentes, así que el backdrop no se ve.
 - Los callbacks de dibujado (`0x080A5580`, `0x080A55EC`, `0x080A547C`) son **código ARM de la ROM original**: solo se registra su dirección en la tabla de slots; sus cuerpos no forman parte de este port.
 
 **Assets del Estado 0** (direcciones ROM):
@@ -152,11 +154,11 @@ Flujo verificado (objdump):
 |---|---|---|
 | Paleta OBJ A (16 col.) | `0x080A5934` | 32 B |
 | Paleta OBJ B (16 col.) | `0x080A5954` | 32 B |
-| Paleta BG (256 col.) | `0x080A5B74` | 512 B (16 colores reales + 240 de relleno verde) |
+| Paleta principal (256 col.) | `0x080A5974` | 512 B (199 colores únicos) — cola de paletas → `0x05000000` |
+| Paleta de la región OBJ (256 col.) | `0x080A5B74` | 512 B (6 colores únicos) — DMA3 → `0x05000200` |
 | Stream 4bpp #1 | `0x080A6174` | 1204 B (cabecera 4 B + 600 words) |
 | Stream 4bpp #2 | `0x080A6628` | 1204 B |
 | Stream 8bpp | `0x080A6ADC` | 1202 B (cabecera 2 B + 600 words) |
-| Descriptor objeto fondo | `0x080A5974` | 8 B |
 
 **Pools de tiles** (bases distintas, verificadas con los literales ARM de cada descompresor):
 - 4bpp: literal en `0x0854C6B8` → base **`0x0802FB28`**, tile de 32 B. Rangos usados: 4 (9504 B): `0x004780+32`, `0x00D420+32`, `0x013020..0x0145A0`, `0x014880..0x0157E0`.
@@ -164,7 +166,7 @@ Flujo verificado (objdump):
 
 > ⚠️ El pool 4bpp **no** está en `0x08556B0C`: usar la base equivocada produce tiles planos (constantes `0x66/0x33/0x55/0xFF`).
 
-Los assets se embeben como arrays C (`src/intro_assets.c`, 49 850 B) generados por `tools/extract_intro_assets.py`, que verifica el SHA-256 de `baserom.gba`. Así ambos targets funcionan sin la imagen de ROM en runtime, y en GBA las copias por DMA3 siguen siendo transferencias ROM → PAL RAM / VRAM.
+Los assets se embeben como arrays C (`src/intro_assets.c`, 50 362 B de datos) generados por `tools/extract_intro_assets.py`, que verifica el SHA-256 de `baserom.gba`. Así ambos targets funcionan sin la imagen de ROM en runtime, y en GBA las copias por DMA3 siguen siendo transferencias ROM → PAL RAM / VRAM.
 
 
 ### Modelo de video medido del fondo 0 (renderizador PC)
@@ -187,63 +189,102 @@ El renderizador de `src/pc_main.c` reproduce el fondo 0 del GBA leyendo los regi
 | | 12 / 13 | volteo H / V |
 
 **Decisiones medidas (no supuestas)**
-- **La capa del Estado 0 es 8bpp, no 4bpp.** `BG0CNT = 0x1F80` → bits 6-7 = `0b10` (256 colores) y los tiles miden 64 B. Confirmado empíricamente: interpretando el mismo tilemap como 4bpp la imagen da **95.3 % de bordes** (ruido); como 8bpp da **15.5 %** (imagen estructurada).
+- **La capa del Estado 0 es 8bpp, no 4bpp.** `BG0CNT = 0x1F80` → bits 6-7 = `0b10` (256 colores) y los tiles miden 64 B. Confirmado empíricamente con la paleta real: interpretando el mismo tilemap como 4bpp la imagen da **71.6 % de bordes** (ruido, 16 colores espurios); como 8bpp da **47.7 %** con 171 colores y una imagen estructurada. (Con la paleta plana de 6 colores el 8bpp daba 15.5 %: el porcentaje de bordes crece con la riqueza de la paleta, así que la comparación válida es 4bpp vs 8bpp con la **misma** paleta.)
 - **Regla A de indexado de paleta (8bpp): `color = pal[valor]`.** El byte del píxel es el índice directo de la paleta de 256 entradas y **el nibble alto hace de banco** (16 bancos de 16). Descartada la Regla B (`pal[valor & 15]`) porque con el Estado 9 esa variante colapsa la imagen a 9 colores frente a 54 de la Regla A (y solo 107 de los 256 valores se usan, con bancos 0-7 y 12 activos).
 - **Región de paleta: `0x05000000` por defecto, también en 8bpp.** Un BG del GBA solo puede leer la paleta en `0x05000000` (la región BG); `0x05000200` es la región de OBJ y **ningún fondo del hardware la consulta**. Por eso el renderizador usa `0x05000000` para cualquier profundidad. Con la tecla `P` (o `--palette-obj`) se cambia a `0x05000200` para comparar.
-- **Espejo de la paleta de 256 colores (solo target PC, `src/intro.c`).** La capa de 8bpp del Estado 0 la dibuja la ROM **por software** (el "objeto de fondo" de `FUN_08028D60`, descriptor `0x080A5974`) usando la paleta de 256 colores que la ROM copia a `0x05000200`; el BG0 del hardware solo puede leer `0x05000000`, donde quedó la paleta B de 16 colores de las capas 4bpp. Como el port PC no ejecuta los callbacks OBJ (`0x080A5580` / `0x080A55EC` / `0x080A547C`, código ARM de la ROM), **el port copia los 512 bytes de `0x05000200` a `0x05000000`** justo después del DMA3 de `0x080A53E4`, para que el fondo 0 muestre los colores reales del logo. En el **target GBA no se hace** (`#ifndef TARGET_GBA`): el cartucho no espeja nada y el hardware leería la paleta B de 16 colores. Efecto secundario medido: `PALRAM[0]` pasa de `0x0000` a `0x03E3` (verde), pero en 8bpp no hay píxeles transparentes, así que el fondo no se ve.
+- **Paleta del fondo 0: la deja la cola del motor en `0x05000000`.** La ROM encola `0x080A5974` (256 colores, **199 únicos**) con `FUN_08028D60` y el VBlank la copia con DMA3 a `0x05000000`; la copia directa de `0x080A5B74` (**6 colores únicos**) va a `0x05000200` (región OBJ). El port PC lee `0x05000000`, así que muestra los colores reales del logo **sin espejos** (el antiguo espejo PC-only se eliminó; ver "Motor de fundidos y cola de paletas").
 - **Conversión BGR555 → ARGB8888** (`bgr555_to_argb`): decodificación `rojo = (c >> 0) & 0x1F`, `verde = (c >> 5) & 0x1F`, `azul = (c >> 10) & 0x1F`, expandidos a 8 bits con `(v << 3) | (v >> 2)`; empaquetado `0xFF000000 | (rojo << 16) | (verde << 8) | azul` (ARGB8888 = `0xAARRGGBB`: bits 24-31 alfa, 16-23 rojo, 8-15 verde, 0-7 azul). **Ojo: invertir rojo y azul en el empaquetado no se detecta en colores simétricos** (magenta, blanco, grises) y produce el "verde dominante" característico: `0x03E3` se veía como `#00FF18` en vez de `#18FF00`, y el cian `0x7FE0` como `#FFFF00` en vez de `#00FFFF`. Todos los colores de la captura deben mapear 1:1 a una entrada de la paleta de la ROM (verificado).
 
-**Unidad de blend (BLDCNT / BLDY) — implementada y medida**
-- Direcciones reales: **`REG_BLDCNT = 0x04000050`**, **`REG_BLDY = 0x04000054`** (no `0x40`/`0x42`; verificado en el objdump de `FUN_08028D7C`: `strh r5,[r6,#84]` y `strh r5,[r6,#80]` con `r6 = 0x04000000`).
-- Estructura de `BLDCNT`: bits 0-5 = 1.er objetivo (0=BG0, 1=BG1, 2=BG2, 3=BG3, 4=OBJ, 5=fondo); **bits 6-7 = modo** (0=sin efecto, 1=alpha, 2=aclarar, 3=oscurecer); bits 8-13 = 2.º objetivo; bit 14 = sprites en VRAM de OBJ.
-- Semántica aplicada por `bld_apply()` (idéntica al hardware): modo 3 → `color * BLDY/16` (solo si `BLDY < 16`); modo 2 → mezcla con blanco `(BLDY-16)/15` (solo si `BLDY > 16`); modo 1 → mezcla 1.er objetivo contra 2.º (o contra el fondo) según `BLDY`.
-- **Valores reales del Estado 0** (`FUN_08028D7C` y `FUN_08028DA4`, verificados): `BLDY = 16`, `BLDCNT = 0x00FF`. Decodificado, `0x00FF` = objetivos `0x3F` (todos) + **modo 3 (oscurecer)** + 2.º objetivo BG0 (bit 8). **Con `BLDY = 16` el modo "oscurecer" no atenúa** (`16/16 = 1.0`), así que la imagen del Estado 0 **no cambia** — verificado: la captura con BLD es byte a byte idéntica a la captura sin BLD.
-- El fundido real lo produce el motor **bajando `BLDY` frame a frame** desde 16 hasta 0; ese código por frame (`FUN_08540B7C` y el runtime del motor) **todavía no está portado**, por eso la intro no se ve atenuarse.
-- Se aplica a los píxeles de BG0 y al fondo (backdrop = `PALRAM[0]`); en 4bpp el índice 0 es transparente, así que ese píxel se modula como fondo, no como capa BG0.
-- Override de depuración: tecla `B` (ciclo normal → oscurecer → aclarar → sin efecto) y `--bld none|brighten|darken|auto`. Comprobación numérica: con `BLDY=8` cada canal se divide por 2 (`#E7E7E7` → `#737373`); con `BLDY=24` se mezcla con blanco al 8/15 (`#737373` → `#BDBDBD`). Los valores de BLDCNT/BLDY se muestran en la barra de estado (`BLD <modo> <BLDY>`) y en la traza por consola.
+### Motor de fundidos y cola de paletas (`src/fade.c`, `0x08028AC4`..`0x08029030`)
+
+El VBlank del cartucho (`0x08000BC4`) llama a `FUN_08028AC4` **antes** de la animación de paletas de OBJ (`FUN_0802E0F0`, no portada). `FUN_08028AC4` hace, en este orden:
+
+1. Si el descriptor tiene `count != 0`, ejecuta el DMA3 de la paleta pedida y limpia `count`.
+2. Llama a `FUN_0802E0F0` (animación de paletas OBJ; **no portada**, el Estado 0 no la necesita).
+3. Avanza un paso de la máquina de estados de fundido.
+
+El port ejecuta el equivalente una vez por frame con `fade_frame_update()`: en PC antes de `states_tick()`, en GBA dentro de `hw_state_frame_wait()` (hasta que se porte `IntrMain`/IRQ).
+
+**Descriptor (`0x030044D8`), verificado con objdump**
+| Offset | Tipo | Campo |
+|---|---|---|
+| `+0x00` | u32 | `count` — halfwords pendientes de copiar (0 = nada) |
+| `+0x04` | u32 | `dst_index` — índice destino en PAL RAM, en halfwords |
+| `+0x08` | u32 | `rom_src` — dirección ROM de origen |
+| `+0x0C` | u8 | `state` — estado de la máquina de fundido |
+| `+0x0D` | u8 | `frames` — frames por paso (recarga del timer) |
+| `+0x0E` | u8 | `timer` — contador decreciente |
+| `+0x0F` | u8 | `bldy` — nivel que la máquina va aplicando a `REG_BLDY` |
+| `+0x10` | u32 | `pending` — valor que se publica en `0x030027B0` |
+| `+0x18` | u32 | `extra` — se pone a 0 al terminar un fundido a negro |
+
+**Estados de la máquina** (todos con `frames = 2`, verificado)
+| Estado | Función de arranque | Comportamiento |
+|---|---|---|
+| 1 | `FUN_08028DA4` | `BLDCNT = 0x00FF`, `BLDY = 16`; baja `BLDY` hasta 0. Al acabar: estado 0, `BLDCNT = 0x0F40`, `BLDALPHA = 0x0808`, `+0x18 = 0`. |
+| 2 | `FUN_08028EF0` / `FUN_08028FA4` | `BLDCNT = 0x00FF`, `BLDY = 0`; sube `BLDY` hasta 16. Al acabar: estado 0 y, si `+0x10 != 0`, lo publica en `0x030027B0` y limpia `+0x10`. |
+| 3 | `FUN_08028EA4` | Igual que 1 pero `BLDCNT = 0x00F4`; **solo arranca si el estado actual es 0**. |
+| 4 | `FUN_08028FE4` | Igual que 2 pero `BLDCNT = 0x00F4`; al acabar estado 0. **Solo arranca con estado 0.** |
+| 5 | `FUN_08028DE4` | `BLDCNT = 0x00BF` (aclarar), `BLDY = 16`; baja `BLDY` hasta 0 (fundido a blanco). Al acabar igual que el estado 1. |
+| 6 | `FUN_08028E24` | `BLDCNT = 0x00BE`, `BLDY = 0`; sube `BLDY` hasta 16. Al acabar deja estado **7** (marcador de reposo; el `switch` del original ignora 7). |
+| 8 | (lo dispara el llamador escribiendo `state = 8`) | estado 0, `BLDCNT = 0x0442` (alpha BG1 sobre BG2), `BLDALPHA = 0x1010` (EVA = EVB = 16). |
+| 0, 7 | — | parado / reposo: no hace nada |
+
+**Semántica de BLD implementada** en `bld_apply()` (`src/pc_main.c`), deducida de la simetría de los estados 1/2, 3/4 y 5/6 del propio motor (baja `BLDY` de 16 a 0 y lo vuelve a subir):
+
+- `nivel = min(BLDY, 16)`.
+- modo 3 (oscurecer): `C * nivel / 16` (0 = negro, 16 = normal).
+- modo 2 (aclarar): `C + (255 - C) * (16 - nivel) / 16` (0 = blanco, 16 = normal).
+- modo 1 (alpha): `C_sup * EVA / 16 + C_inf * EVB / 16`, con `EVA` (bits 0-4 de `BLDALPHA`) y `EVB` (bits 8-12) recortados a 16.
+- Los modos 2 y 3 solo modulan el **1.er objetivo**; el 2.º se ignora. En el modo 1 el 1.er objetivo es la capa superior y el 2.º la inferior (o el backdrop si el 2.º conjunto lo incluye).
+- Direcciones reales: **`REG_BLDCNT = 0x04000050`**, **`REG_BLDALPHA = 0x04000052`**, **`REG_BLDY = 0x04000054`** (verificado en el objdump de `FUN_08028D7C`: `strh r5,[r6,#84]` y `strh r5,[r6,#80]` con `r6 = 0x04000000`).
+
+**Valores reales del Estado 0**: `BLDY = 16`, `BLDCNT = 0x00FF` (objetivos `0x3F` = todos, **modo 3**, sin 2.º objetivo), `BLDALPHA` **no se escribe**. Con `BLDY = 16` el modo 3 no atenúa (`16/16 = 1.0`), así que la imagen no cambia. Además `intro_common_init()` reinicia el estado a 1 con `BLDY = 16` y `timer = 2` en **cada** frame, así que el fundido no progresa en el Estado 0 — fiel a la ROM.
+
+Comprobación numérica del motor (`/tmp/opencode/fade_test.c`): estado 1 → `BLDY` 16→0 en 32 frames y termina en estado 0, `BLDCNT = 0x0F40`, `BLDALPHA = 0x0808`; estado 2 → `BLDY` 0→16 y publica `0x030027B0 = 1`; estado 6 → acaba en estado 7 con `BLDCNT = 0x00BE`; `fade_in_subset()` solo actúa con estado 0; estado 8 → `BLDCNT = 0x0442`, `BLDALPHA = 0x1010`.
+
+Override de depuración: tecla `B` (normal → oscurecer → aclarar → alpha → sin efecto) y `--bld none|brighten|darken|alpha|auto`. La barra de estado muestra `BLD <modo> <BLDY> <BLDALPHA>` y la traza por consola incluye `EVA`/`EVB`.
+
+**Paleta real del fondo 0**
+- La paleta que el BG0 lee en `0x05000000` la escribe la **cola** del motor: `0x080A53D8` → `FUN_08028D60` (r3 = `0x080A5974`, `count = 0x100`) → DMA3 en el VBlank. `0x080A5974` tiene **199 colores únicos**.
+- La copia directa `0x080A53E4` va a `0x05000200` (**región OBJ**) desde `0x080A5B74`, que tiene **6 colores únicos** (negro, blanco, cian, gris claro/medio/oscuro).
+- El antiguo "espejo" PC-only (copiar `0x05000200` → `0x05000000`) partía de una premisa equivocada y **se ha eliminado**: ya no hace falta, porque el renderizador lee la paleta que la ROM deja realmente en `0x05000000`.
 
 **Discrepancia real de la ROM (documentada, no es un error del port)**
-- El **Estado 0** copia su paleta de 256 colores a `0x05000200` (región OBJ) — verificado en `0x080A53E8`: `mov r5,#0x05000000` / `add r5,#0x200` → `DMA3DAD = 0x05000200`.
+- El **Estado 0** deja su paleta de 256 colores principal en `0x05000000` **por la cola del VBlank** (`0x080A53D8` → `FUN_08028D60` → DMA3), y además copia otra paleta de 256 colores a `0x05000200` (región OBJ) en `0x080A53E8`: `mov r5,#0x05000000` / `add r5,#0x200` → `DMA3DAD = 0x05000200`.
 - El **Estado 9** copia la suya a `0x05000000` (región BG) — verificado en `0x080A56D0`: `mov r5,#0x05000000` → `DMA3DAD = 0x05000000`.
-- Un BG real del GBA solo puede leer `0x05000000`, así que **en hardware la capa 8bpp del Estado 0 se vería con la paleta de 16 colores que quedó en `0x05000000`** (negro + logo en cian/gris/blanco), no con la de 256 colores. La capa de 8bpp del Estado 0 es, por tanto, una capa **renderizada por software** (el "objeto de fondo" que registra `FUN_08028D60` con el descriptor de `0x080A5974`), no el BG0 del hardware.
-- Además `DISPCNT = 0x1140` declara **modo 0** (BG de 16 colores) mientras `BG0CNT` pide 256 colores: el juego usa `BG0CNT` como selector de profundidad real. No existe en toda la ROM ningún `mov rN,#0x1144` (modo 4 + BG0); los únicos candidatos a modo 4 son `0x3FC`, `0x12C`, `0x364` y `0x384`.
-- **Resolución en el port PC**: el espejo de paleta descrito arriba deja el fondo 0 con los colores reales de la intro (verde/magenta/amarillo) sin depender de teclas de depuración. El target GBA conserva el comportamiento del cartucho (sin espejo).
+- `DISPCNT = 0x1140` declara **modo 0** (BG de 16 colores) mientras `BG0CNT = 0x1F80` pide 256 colores: el juego usa `BG0CNT` como selector de profundidad real. No existe en toda la ROM ningún `mov rN,#0x1144` (modo 4 + BG0); los únicos candidatos a modo 4 son `0x3FC`, `0x12C`, `0x364` y `0x384`.
+- **Resolución en el port PC**: el renderizador lee la paleta que la ROM deja en `0x05000000` (199 colores de `0x080A5974`), así que el fondo 0 muestra los colores reales del logo sin espejos ni teclas de depuración. El target GBA ejecuta el mismo código con los registros reales.
 - El renderizador ofrece las teclas `P` (cambiar de región de paleta), `M` (forzar 4bpp) y `B` (override de BLD) para comparar las variantes en vivo.
 
-**Estado real de la PAL RAM emulada del Estado 0** (volcado del binario, sin el espejo)
-| Índice | `0x05000000` (BG) | `0x05000200` (OBJ) |
+**Estado real de la PAL RAM emulada del Estado 0**
+| Región | Origen | Contenido |
 |---|---|---|
-| 0 | `0x0000` (**forzado a 0** por `FUN_08028D7C`, que corre después de la copia de la paleta B) | `0x03E3` verde |
-| 1 | `0x739C` gris claro | `0x53FF` amarillo pálido |
-| 2 | `0x5EF7` gris | `0x031F` naranja |
-| 3 | `0x39CE` gris oscuro | `0x001F` rojo |
-| 4 | `0x0000` | `0x0000` negro |
-| 5 | `0x7FFF` blanco | `0x7C1F` magenta |
-| 6-15 | `0x7FE0` cian | `0x7C1F` magenta |
-| 16-255 | `0x0000` (nunca escrito) | `0x03E3` verde (relleno) |
+| `0x05000000` (BG) | cola de paletas → `0x080A5974` | 256 halfwords, **199 colores únicos**; entrada 0 en ROM `0x03E0` (verde), pero `fade_reset()` la pone a `0x0000` en cada frame antes del render |
+| `0x05000200` (OBJ) | DMA3 directo → `0x080A5B74` | 256 halfwords, **6 colores únicos** (`0x03E3`, `0x53FF`, `0x031F`, `0x001F`, `0x0000`, `0x7C1F`); el resto es relleno `0x7C1F` y `0x03E3` |
 
-> Con el espejo del port PC, `0x05000000` pasa a contener exactamente los mismos 256 valores que `0x05000200` (16 colores reales + 240 de relleno verde).
+Entradas 0-5 de `0x080A5974`: `0x03E0`, `0x0001`, `0x0443`, `0x0C64`, `0x0865`, `0x0C67`; el bloque final (`240-255`) incluye `0x7FFF`, `0x0000`, `0x231F`, `0x1E3F`, `0x001F`, `0x0018` y relleno `0x03E0`.
 
 **Renderizador (`src/pc_main.c`)**
 - `render_bg0()` → `bgr555_to_argb()` → framebuffer ARGB8888 → textura `SDL_PIXELFORMAT_ARGB8888` escalada con `SDL_ScaleModeNearest`.
 - Layout del mapa por bloques de 32x32 tiles: `32x32` → bloque 0; `32x64` → bloques 0 y 2; `64x32` → bloques 0 y 1; `64x64` → bloques 0, 1, 2 y 3.
 - En 4bpp el índice es `banco * 16 + nibble` y el índice 0 es **transparente** (se ve el backdrop = `PALRAM[0]`).
-- Barra de estado con fuente 5x7 propia (`STATE nn / DISPCNT / BG0CNT / 8BPP|4BPP / dirección de paleta / BLD modo BLDY`).
-- Captura BMP de 24 bits (`save_bmp`), atajos `P`/`M`/`B`/`S`/`ESC` y opciones `--screenshot <f.bmp>`, `--hold`, `--palette-obj`, `--4bpp`, `--bld none|brighten|darken|auto`.
+- Barra de estado con fuente 5x7 propia (`STATE nn / DISPCNT / BG0CNT / 8BPP|4BPP / dirección de paleta / BLD modo BLDY BLDALPHA`).
+- Captura BMP de 24 bits (`save_bmp`), atajos `P`/`M`/`B`/`S`/`ESC` y opciones `--screenshot <f.bmp>`, `--hold`, `--palette-obj`, `--4bpp`, `--bld none|brighten|darken|alpha|auto`.
 - **Los OBJ no se renderizan**: los callbacks `0x080A5580` / `0x080A55EC` / `0x080A547C` son código ARM de la ROM y solo se registra su dirección en la tabla de slots.
+- **El tick del fundido va antes del render**: `fade_frame_update()` → `states_tick()` → `render_bg0()`. La paleta encolada en el frame N se copia al principio del frame N+1 (la captura se toma en el frame 3).
 
 **Capturas de referencia verificadas** (`SDL_VIDEODRIVER=dummy ... --screenshot`)
 | Variante | Colores | Colores y pesos | Bordes | Lectura |
 |---|---|---|---|---|
-| 8bpp, paleta `0x05000000` (**por defecto, con espejo**) | 6 | `#18FF00` 79.4 %, `#FF00FF` 10.0 %, `#FFFFA5` 5.4 %, `#000000` 2.5 %, `#FFC600` 2.3 %, `#FF0000` 0.5 % | 15.5 % | **colores reales de la intro**: fondo verde + logo en magenta/amarillo/naranja/rojo |
-| 8bpp, paleta `0x05000200` (`--palette-obj`) | 6 | idéntica a la fila anterior | 15.5 % | con el espejo ambas regiones contienen la misma paleta |
-| 8bpp **sin espejo** (referencia del hardware GBA) | 6 | `#000000` 81.8 %, `#00FFFF` 9.3 %, `#E7E7E7` 5.4 %, `#BDBDBD` 2.3 %, `#FFFFFF` 0.8 %, `#737373` 0.5 % | 15.7 % | lo que vería el BG0 del hardware: paleta B de 16 colores |
-| 4bpp forzado (`--4bpp`) | 6 | — | **95.3 %** | ruido → confirma que la capa es 8bpp |
-| 8bpp + BLD del juego (`BLDCNT=0x00FF`, `BLDY=16`) | 6 | idéntica a la primera fila | 15.5 % | modo 3 sin atenuación (`16/16 = 1.0`) |
-| 8bpp + `--bld darken` (`BLDY=8`) | 6 | `#0C7F00` 79.4 %, `#7F007F` 10.0 %, `#7F7F52` 5.4 %, `#000000` 2.5 %, `#7F6300` 2.3 %, `#7F0000` 0.5 % | 15.5 % | cada canal × 8/16 (p. ej. `#18FF00` → `#0C7F00`) |
-| 8bpp + `--bld brighten` (`BLDY=24`) | 6 | `#93FF88` 79.4 %, `#FF88FF` 10.0 %, `#FFFFD5` 5.4 %, `#888888` 2.5 %, `#FFE488` 2.3 %, `#FF8888` 0.5 % | 15.5 % | mezcla con blanco al 8/15 (p. ej. `#18FF00` → `#93FF88`) |
+| 8bpp, paleta `0x05000000` (**por defecto**) | **171** | `#FFFFFF` 16.8 %, `#000000` 11.2 %, `#080000` 5.4 %, `#FF0000` 5.0 %, `#291810` 2.5 %, `#FF8C39` 2.2 % | 47.7 % | **paleta real del cartucho** (`0x080A5974`): logo en blanco/rojo/naranja; 100 % de los píxeles mapean 1:1, 0 % verde `#18FF00` y 0 % magenta `#FF00FF` |
+| 8bpp, paleta `0x05000200` (`--palette-obj`) | 6 | `#18FF00` 79.4 %, `#FF00FF` 10.0 %, `#FFFFA5` 5.4 %, `#000000` 2.5 %, `#FFC600` 2.3 %, `#FF0000` 0.5 % | 7.8 % | paleta B de 16 colores (región OBJ) → verde/magenta planos |
+| 4bpp forzado (`--4bpp`) | 16 | — | **71.6 %** | ruido → confirma que la capa es 8bpp |
+| 8bpp + `--bld darken` (`BLDCNT=0x00C1`, `BLDY=8`) | 171 | `#7F7F7F` 16.8 %, `#000000` 11.2 %, `#040000` 5.4 %, `#7F0000` 5.0 % | 47.7 % | canal × 8/16 (`#FFFFFF`→`#7F7F7F`, `#FF0000`→`#7F0000`) |
+| 8bpp + `--bld brighten` (`BLDCNT=0x0081`, `BLDY=8`) | 171 | `#FFFFFF` 16.8 %, `#7F7F7F` 11.2 %, `#837F7F` 5.4 %, `#FF7F7F` 5.0 % | 47.7 % | `C+(255-C)*8/16` (`#000000`→`#7F7F7F`, `#FF0000`→`#FF7F7F`) |
+| 8bpp + `--bld alpha` (`BLDCNT=0x2041`, `BLDALPHA=0x0808`) | 171 | `#7F7F7F` 16.8 %, `#000000` 11.2 %, `#040000` 5.4 %, `#7F0000` 5.0 % | 47.7 % | 50/50 BG0 sobre el backdrop; como `PALRAM[0]=0`, coincide con oscurecer al 50 % |
 
-> Los colores de las capturas de 8bpp se comprobaron uno a uno contra las entradas de la paleta de 256 colores de la ROM (`0x080A5B74`): **todos** mapean 1:1 (ver `tools`-style check en `/tmp/opencode/palette_check.py`).
+> La captura por defecto (171 colores) se comprobó color a color contra las 256 entradas de `0x080A5974`: **el 100 % de los píxeles** mapea 1:1 (ningún color fuera de la paleta). La misma imagen con `--palette-obj` da los 6 colores de `0x080A5B74`.
 
 
 ### Engine runtime layout (verified with REA)
@@ -303,7 +344,7 @@ All remaining states transition dynamically through `0x03004A5C` (state 4 writes
 - `0x080AFxxx` — records/data (`0x080AF898`).
 - `0x0844xxxx`/`0x0845xxxx` — scene/story.
 - `0x0853xxxx`..`0x0855xxxx` — race module.
-- Shared helpers: `0x080A5188` (init), `0x080AF768` (VRAM/OBJ), `0x08540B7C` (common update), `0x0800055C`/`0x080005D4` (BGM select/stop), `0x080003E8`/`0x0800048C`/`0x080004AC` (boot/flag helpers).
+- Shared helpers: `0x080A5188` (init), `0x080AF768` (VRAM/OBJ), `0x08028AC4` (motor de fundidos + cola de paletas en VBlank), `0x08540B7C` (espera de frame), `0x0800055C`/`0x080005D4` (BGM select/stop), `0x080003E8`/`0x0800048C`/`0x080004AC` (boot/flag helpers).
 
 ### Naming caveat
 The ROM's text uses a **custom font encoding**, so state names are **not readable from strings**. Names in `include/states.h` are **inferred** from structural evidence (RAM/ROM literals, callees, DISPCNT constants, transition graph) — they are labels for the developer, not extracted strings.

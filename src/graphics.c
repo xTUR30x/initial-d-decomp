@@ -217,13 +217,7 @@ u8 *graphics_register_obj_callback(u32 callback)
     return NULL;   // tabla llena: el original tambien retorna sin hacer nada
 }
 
-// Portado de FUN_08028d60.
-void graphics_register_object(u32 desc)
-{
-    hw_mem_write32(OBJECT_DESC_ADDR, 0x100u);
-    hw_mem_write32(OBJECT_DESC_ADDR + 4u, 0u);
-    hw_mem_write32(OBJECT_DESC_ADDR + 8u, desc);
-}
+// Portado de FUN_08028d60 se movio al motor de fundidos (src/fade.c).
 
 // ==============================================================================
 // Implementacion de la capa de plataforma
