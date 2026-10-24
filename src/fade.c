@@ -80,49 +80,49 @@ void fade_reset(void)
     hw_mem_write16(GBA_PALRAM_BASE, 0u);
 }
 
-void fade_out_all(void)
+void fade_in_all(void)
 {
-    // 0x08028DA4: estado 1, 0x00FF, BLDY 16, frames/timer 2.
+    // 0x08028DA4: estado 1 (modo 3, todos), BLDY 16 -> 0, frames/timer 2.
     fade_begin(0x00FFu, 16u, 1u, 2u);
 }
 
-void fade_to_white(void)
+void fade_in_from_white(void)
 {
-    // 0x08028DE4: estado 5, 0x00BF, BLDY 16, frames/timer 2.
+    // 0x08028DE4: estado 5 (modo 2, todos), BLDY 16 -> 0, frames/timer 2.
     fade_begin(0x00BFu, 16u, 5u, 2u);
 }
 
-void fade_from_white(void)
+void fade_out_to_white(void)
 {
-    // 0x08028E24: estado 6, 0x00BE, BLDY 0, frames/timer 2.
+    // 0x08028E24: estado 6 (modo 2), BLDY 0 -> 16, frames/timer 2.
     fade_begin(0x00BEu, 0u, 6u, 2u);
 }
 
-void fade_out_subset(void)
+void fade_in_subset(void)
 {
-    // 0x08028EA4: solo si la maquina esta parada (estado 0).
+    // 0x08028EA4: estado 3, solo si la maquina esta parada (estado 0).
     if (fade_desc_read8(0x0Cu) != 0u) {
         return;
     }
     fade_begin(0x00F4u, 16u, 3u, 2u);
 }
 
-void fade_in_all(void)
+void fade_out_all(void)
 {
-    // 0x08028FA4: estado 2 sin peticion pendiente, 0x00FF, BLDY 0.
+    // 0x08028FA4: estado 2 sin peticion pendiente, BLDY 0 -> 16.
     fade_begin(0x00FFu, 0u, 2u, 2u);
 }
 
-void fade_in_all_request(void)
+void fade_out_all_request(void)
 {
     // 0x08028EF0 / 0x08028F00: peticion pendiente = 1 y estado 2.
     fade_desc_write32(0x10u, 1u);
     fade_begin(0x00FFu, 0u, 2u, 2u);
 }
 
-void fade_in_subset(void)
+void fade_out_subset(void)
 {
-    // 0x08028FE4: solo si la maquina esta parada (estado 0).
+    // 0x08028FE4: estado 4, solo si la maquina esta parada (estado 0).
     if (fade_desc_read8(0x0Cu) != 0u) {
         return;
     }
@@ -157,7 +157,9 @@ static bool fade_tick_due(void)
 }
 
 // Estados 1, 3 y 5: bajan BLDY hasta 0 y despues aplican el "reset" de blend.
-static void fade_step_darken(void)
+// Con modo 3 (estados 1/3) eso va de negro a normal (entrada); con modo 2
+// (estado 5) va de blanco a normal (entrada desde blanco).
+static void fade_step_bldy_down(void)
 {
     if (!fade_tick_due()) {
         return;
@@ -182,10 +184,10 @@ static void fade_step_darken(void)
 }
 
 // Estados 2, 4 y 6: suben BLDY hasta 16 y despues cierran el estado.
-//   state 2 -> puede publicar la peticion pendiente en 0x030027B0
-//   state 4 -> estado 0
-//   state 6 -> estado 7 (reposo; el switch del original ignora 7)
-static void fade_step_brighten(u8 state)
+//   state 2 -> salida a negro; puede publicar la peticion pendiente en 0x030027B0
+//   state 4 -> salida a negro de un subconjunto; estado 0
+//   state 6 -> salida a blanco; estado 7 (reposo; el switch del original ignora 7)
+static void fade_step_bldy_up(u8 state)
 {
     if (!fade_tick_due()) {
         return;
@@ -248,13 +250,13 @@ void fade_frame_update(void)
         case 1u:
         case 3u:
         case 5u:
-            fade_step_darken();
+            fade_step_bldy_down();
             break;
 
         case 2u:
         case 4u:
         case 6u:
-            fade_step_brighten(state);
+            fade_step_bldy_up(state);
             break;
 
         case 8u:

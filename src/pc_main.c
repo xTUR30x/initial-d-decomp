@@ -23,7 +23,7 @@
 //   ESC -> salir
 //
 // Opciones de linea de comandos:
-//   --screenshot <archivo.bmp>  renderiza unos frames y guarda una captura
+//   --screenshot <archivo.bmp>  espera al fundido de entrada y guarda una captura
 //   --hold                      no deja que el modo demostracion avance de estado
 //   --palette-obj               usa la paleta 0x05000200 (region OBJ) en la capa 8bpp
 //   --4bpp                      fuerza la interpretacion 4bpp del fondo 0
@@ -771,10 +771,13 @@ int main(int argc, char *argv[])
         }
 
         if (screenshot_path != NULL) {
-            // Modo captura: un frame basta para tener la pantalla montada.
+            // Modo captura: espera a que termine el fundido de entrada del
+            // Estado 0. El motor baja BLDY de 16 a 0 con frames = 2, o sea
+            // 32 frames; a partir de ahi el logo esta a plena intensidad y la
+            // paleta principal ya se copio a 0x05000000 (frame 2).
             static u32 frames = 0;
             frames++;
-            if (frames >= 3u) {
+            if (frames >= 40u) {
                 save_bmp(screenshot_path);
                 running = false;
             }

@@ -111,9 +111,11 @@ void intro_common_init(void)
     hw_mem_write32(0x030044BCu, 0u);
     hw_mem_write32(0x030044C0u, 0u);
 
-    // FUN_08028DA4: BLDY = 16, BLDCNT = 0x00FF y estado 1 de la maquina de
-    // fundidos (+0x0C = 1, +0x0D = 2, +0x0E = 2, +0x0F = 16).
-    fade_out_all();
+    // FUN_08028DA4: fade de entrada desde negro: BLDCNT = 0x00FF (modo 3,
+    // todos los objetivos), BLDY = 16 y estado 1 de la maquina de fundidos
+    // (+0x0C = 1, +0x0D = 2, +0x0E = 2, +0x0F = 16). El VBlank va bajando
+    // BLDY hasta 0, momento en que el logo queda a plena intensidad.
+    fade_in_all();
 }
 
 // ------------------------------------------------------------------------------
@@ -182,15 +184,20 @@ void intro_state_body(void)
     // 0x080A52E4: *0x030027AC = 0 (el handler se reindexa a si mismo).
     states_set_current(0);
 
-    // 0x080A52F0: DISPCNT = 0x0040 (modo 0, OBJ 1D mapping).
-    hw_gfx_reg_write16(REG_DISPCNT, 0x0040u);
-
-    // 0x080A52FC: si el flag "ya inicializado" esta puesto, se salta al
-    // bloque comun (el montaje completo solo se hace la primera vez).
+    // 0x080A52FC: si el flag "ya inicializado" esta puesto, la ROM salta al
+    // bloque comun. En el cartucho ese bloque solo se ejecuta al VOLVER de la
+    // espera de input (0x08540B7C), no una vez por frame; mientras tanto el
+    // VBlank avanza el fundido de entrada hasta dejar el logo visible.
+    //
+    // El port no emula input, asi que el montaje se hace una sola vez y se
+    // deja progresar el fundido. Reinicializarlo cada frame volveria a fijar
+    // BLDY = 16 (pantalla negra) y el logo nunca se veria.
     if (hw_mem_read32(INTRO_INIT_FLAG_ADDR) != 0u) {
-        intro_common_block();
         return;
     }
+
+    // 0x080A52F0: DISPCNT = 0x0040 (modo 0, OBJ 1D mapping, forced blank).
+    hw_gfx_reg_write16(REG_DISPCNT, 0x0040u);
 
     // 0x080A530C: marca "ya inicializado".
     hw_mem_write32(INTRO_INIT_FLAG_ADDR, 1u);

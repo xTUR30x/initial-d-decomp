@@ -75,31 +75,34 @@ void fade_palette_dma_request(u32 rom_src);
 // ------------------------------------------------------------------------------
 
 // Portado de FUN_08028D7C: BLDY = 16, BLDCNT = 0x00FF y PALRAM[0] = 0.
-// No toca el estado de la maquina.
+// Deja la pantalla en negro (modo 3 con nivel 16) sin tocar el estado de la
+// maquina.
 void fade_reset(void);
 
-// Portado de FUN_08028DA4: estado 1 (oscurecer todos, 0x00FF, BLDY 16).
-void fade_out_all(void);
-
-// Portado de FUN_08028DE4: estado 5 (aclarar hacia blanco, 0x00BF, BLDY 16).
-void fade_to_white(void);
-
-// Portado de FUN_08028E24: estado 6 (volver del blanco, 0x00BE, BLDY 0).
-void fade_from_white(void);
-
-// Portado de FUN_08028EA4: estado 3 (oscurecer subconjunto, 0x00F4).
-// Solo actua si la maquina esta parada (estado 0).
-void fade_out_subset(void);
-
-// Portado de FUN_08028FA4: estado 2 sin publicar peticion (0x00FF, BLDY 0).
+// Portado de FUN_08028DA4: estado 1 (entrada desde negro con todos los
+// objetivos, 0x00FF, BLDY 16 -> 0).
 void fade_in_all(void);
 
-// Portado de FUN_08028EF0/0x08028F00: estado 2 con peticion pendiente = 1.
-void fade_in_all_request(void);
+// Portado de FUN_08028DE4: estado 5 (entrada desde blanco, 0x00BF, BLDY 16 -> 0).
+void fade_in_from_white(void);
 
-// Portado de FUN_08028FE4: estado 4 (volver del blanco en un subconjunto).
-// Solo actua si la maquina esta parada (estado 0).
+// Portado de FUN_08028E24: estado 6 (salida a blanco, 0x00BE, BLDY 0 -> 16).
+void fade_out_to_white(void);
+
+// Portado de FUN_08028EA4: estado 3 (entrada desde negro de un subconjunto,
+// 0x00F4). Solo actua si la maquina esta parada (estado 0).
 void fade_in_subset(void);
+
+// Portado de FUN_08028FA4: estado 2 sin publicar peticion (salida a negro con
+// todos los objetivos, 0x00FF, BLDY 0 -> 16).
+void fade_out_all(void);
+
+// Portado de FUN_08028EF0/0x08028F00: estado 2 con peticion pendiente = 1.
+void fade_out_all_request(void);
+
+// Portado de FUN_08028FE4: estado 4 (salida a negro de un subconjunto,
+// 0x00F4). Solo actua si la maquina esta parada (estado 0).
+void fade_out_subset(void);
 
 // Dispara el estado 8 (alpha BG1 sobre BG2) en el siguiente VBlank.
 void fade_request_alpha_bg1_bg2(void);
