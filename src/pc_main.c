@@ -42,6 +42,7 @@
 #include "graphics.h"
 #include "memory.h"
 #include "fade.h"
+#include "fade.h"  // ensure fade_out_all available
 
 #define GBA_SCREEN_WIDTH  240
 #define GBA_SCREEN_HEIGHT 160
@@ -717,6 +718,24 @@ int main(int argc, char *argv[])
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_KEYDOWN) {
+                // Transicion de entrada: titulo/STATE 36 -> menu principal
+                // Mientras BLDY == 0 (fundido completado), START/A pasan a salir
+                // del fundido y cambiar estado.
+                {
+                    const u32 cur = states_get_current();
+                    if (cur == 36u) {
+                        u8 bldy = hw_mem_read8(FADE_DESC_ADDR + 0x0Fu);
+                        if (bldy == 0u) {
+                            SDL_Keycode k = event.key.keysym.sym;
+                            if (k == SDLK_RETURN || k == SDLK_SPACE || k == SDLK_a || k == SDLK_z) {
+                                fade_out_all();
+                                states_set_current(1u);
+                                printf("[input] STATE 36 -> STATE 1 (fade_out_all)\n");
+                                break;
+                            }
+                        }
+                    }
+                }
                 switch (event.key.keysym.sym) {
                     case SDLK_ESCAPE:
                         running = false;
@@ -758,6 +777,32 @@ int main(int argc, char *argv[])
 
         // 1) VBlank: motor de fundidos y cola de paletas (FUN_08028AC4).
         fade_frame_update();
+        // Actualización de animación/OAM (FUN_08540B98)
+        {
+            extern void graphics_anim_oam_update(void);
+            graphics_anim_oam_update();
+        }
+        {
+            extern void graphics_oam_copy_buffer(void);
+            graphics_oam_copy_buffer();
+        }
+        // Input: leer REG_KEYINPUT para STATE 36
+        {
+            extern u32 states_get_current(void);
+            extern void states_set_current(u32);
+            extern void fade_out_all(void);
+            if (states_get_current() == 36u) {
+                u8 bldy = hw_mem_read8(0x030044D8u + 0x0Fu);
+                if (bldy == 0u) {
+                    const Uint8 *state = SDL_GetKeyboardState(NULL);
+                    if (state[SDL_SCANCODE_RETURN] || state[SDL_SCANCODE_SPACE] || state[SDL_SCANCODE_A] || state[SDL_SCANCODE_Z]) {
+                        fade_out_all();
+                        states_set_current(1u);
+                        printf("[input] STATE 36 -> STATE 1 (fade_out_all) via input\n");
+                    }
+                }
+            }
+        }
 
         // 2) Maquina de estados: un paso por frame (equivalente a un frame
         //    del bucle cooperativo del cartucho).

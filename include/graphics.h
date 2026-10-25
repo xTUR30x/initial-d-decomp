@@ -21,7 +21,9 @@
 // ==============================================================================
 
 // OAM del GBA: 128 entradas de 8 bytes (attr0/attr1/attr2/padding).
-#define OAM_BASE_ADDR     0x07000000u
+#ifndef GBA_OAM_BASE
+#define GBA_OAM_BASE 0x07000000u
+#endif
 #define OAM_ENTRY_COUNT   128u
 #define OAM_ENTRY_SIZE    8u
 
@@ -81,6 +83,9 @@ void hw_oam_write_entry(u32 index, u32 attr01_word, u16 attr2);
 void hw_gfx_reg_write16(u32 reg, u16 value);
 void hw_gfx_reg_write32(u32 reg, u32 value);
 u16  hw_gfx_reg_read16(u32 reg);
+
+void graphics_anim_oam_update(void);
+void graphics_oam_copy_buffer(void);
 
 // Transferencia DMA3: copia `words` palabras de 32 bits desde `src` a `dst`.
 // En GBA programa DMA3SAD/DAD/CNT_L/CNT_H (0x8400); en PC copia al buffer

@@ -110,7 +110,7 @@ typedef struct {
 // ------------------------------------------------------------------------------
 #define GAME_STATE_LIST(X)                                                                     \
     X( 0, INTRO_LOGO,   0x080A52E4u, 0x080A5000u, "Intro/Logo",                GAME_SCREEN_INTRO,   GAME_STATE_FLAG_CUSTOM | GAME_STATE_FLAG_DYNAMIC, GAME_STATE_INVALID, GAME_STATE_INVALID) \
-    X( 1, TITLE_MENU,   0x080A3EB0u, 0x080A3000u, "Menu principal",            GAME_SCREEN_MENU,    GAME_STATE_FLAG_MUSIC,       23u,  GAME_STATE_INVALID) \
+    X( 1, TITLE_MENU,   0x080A3EB0u, 0x080A3000u, "Menu principal",            GAME_SCREEN_MENU,    GAME_STATE_FLAG_MUSIC | GAME_STATE_FLAG_CUSTOM,       23u,  GAME_STATE_INVALID) \
     X( 2, MODE_SELECT,  0x0809D34Cu, 0x0809D000u, "Seleccion de modo",         GAME_SCREEN_MENU,    GAME_STATE_FLAG_DYNAMIC,      9u,  GAME_STATE_INVALID) \
     X( 3, SCENE_LOAD,   0x0845A814u, 0x0845A000u, "Carga de escena",           GAME_SCREEN_SCENE,   GAME_STATE_FLAG_DYNAMIC,      2u,  GAME_STATE_INVALID) \
     X( 4, MENU_BGM,     0x080004D4u, 0x08000400u, "BGM del cursor de menu",    GAME_SCREEN_MUSIC,   GAME_STATE_FLAG_MUSIC,       GAME_STATE_INVALID, GAME_STATE_INVALID) \

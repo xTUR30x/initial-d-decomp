@@ -18,6 +18,7 @@
 
 #include "global.h"
 #include "memory.h"
+#include "graphics.h"
 
 #include <stddef.h>   // NULL
 
@@ -131,6 +132,9 @@ const void *hw_rom_ptr(u32 rom_addr)
 static u8 g_iwram_high[BOOT_CLEAR_IWRAM_WORDS * 16u];
 static u8 g_vram[BOOT_CLEAR_VRAM_WORDS * 16u];
 static u8 g_palram[GBA_PALRAM_SIZE];
+static u8 g_oam_buffer[OAM_ENTRY_COUNT * OAM_ENTRY_SIZE];
+
+u8 *hw_oam_region_ptr(void) { return g_oam_buffer; }
 
 void hw_memzero_dwords(u32 addr, u32 dwords)
 {
@@ -178,6 +182,9 @@ u8 *hw_mem_region_ptr(u32 addr)
     }
     if (addr >= GBA_PALRAM_BASE && addr < (GBA_PALRAM_BASE + sizeof(g_palram))) {
         return g_palram + (addr - GBA_PALRAM_BASE);
+    }
+    if (addr >= GBA_OAM_BASE && addr < (GBA_OAM_BASE + sizeof(g_oam_buffer))) {
+        return g_oam_buffer + (addr - GBA_OAM_BASE);
     }
     return NULL;
 }

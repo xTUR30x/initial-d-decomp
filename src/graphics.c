@@ -21,11 +21,65 @@
 // tiles y registro de objetos (usados por el Estado 0 / intro).
 // ==============================================================================
 
+// ------------------------------------------------------------------------------
 #include "global.h"
 #include "graphics.h"
 #include "memory.h"
 
 #include <stddef.h>   // NULL
+
+static u8 g_shadow_oam[OAM_ENTRY_COUNT * OAM_ENTRY_SIZE];
+
+void graphics_oam_copy_buffer(void)
+{
+    u32 src = 0x030040A0u;
+    // guard clauses
+    if (src == 0) return;
+    for (u32 i = 0; i < OAM_ENTRY_COUNT; i++) {
+        // read safely via hw_mem
+        u32 v0 = hw_mem_read32(src + i * 8u);
+        u32 v1 = hw_mem_read32(src + i * 8u + 4u);
+        if (v0 == 0 && v1 == 0 && i > 0) {
+            // avoid unnecessary writes if buffer not initialized
+        }
+        *(u32 *)(g_shadow_oam + i * 8u) = v0;
+        *(u32 *)(g_shadow_oam + i * 8u + 4u) = v1;
+    }
+}
+
+
+
+
+void graphics_anim_oam_update(void)
+{
+    const u32 addr_f0 = 0x030046F0u;
+    const u32 addr_648 = 0x03004648u;
+    const u32 addr_600 = 0x03004600u;
+    const u32 addr_630 = 0x03004630u;
+
+    if (hw_mem_read32(addr_f0) == 0 && hw_mem_read32(addr_f0 + 4u) == 0) {
+        return;
+    }
+    u32 base = hw_mem_read32(addr_f0 + 4u);
+    const u8 *table = hw_rom_ptr(0x08540C00u);
+    if (table == NULL) {
+        return;
+    }
+    u32 idx = base << 2;
+    const u8 *p = table + idx;
+    u32 val = (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+    u32 off = (hw_mem_read32(addr_648) != 1u) ? (val & 0xFFFFu) : (val >> 16);
+    u32 cur = hw_mem_read32(addr_600);
+    cur = (cur + off) & 0xFFFFFFFFu;
+    u32 v2 = (hw_mem_read32(addr_630) >> 8) & 0xFFu;
+    cur = (cur + v2) & 0xFFFFFFFFu;
+    if (cur > 0x78u) {
+        cur = 0x78u;
+    }
+    hw_mem_write32(addr_600, cur);
+    hw_mem_write32(addr_600 + 4u, cur);
+}
+
 
 // ------------------------------------------------------------------------------
 // API de graficos

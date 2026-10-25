@@ -97,6 +97,26 @@ Beware: Ghidra pseudocode of the boot entry is misleading and was corrected belo
 | `FUN_0800055C` / `FUN_080005D4` | `src/audio.c` (`audio_bgm_play/stop`) | Audio | Selector de BGM: tabla de 12 descriptores en ROM `0x080005A4`; "pista actual" en `0x030027B4`; handle del driver `0x03007B60`. `movs r4,r4` solo actualiza flags (**no** trunca a 16 bits): el puntero de canción es completo. |
 | `FUN_080A5188` | `src/intro.c` (`intro_common_init`) | Lógica/Gráficos | Init común: `FUN_0800048C` (2 palabras a 0), `FUN_08028D7C` (`fade_reset`: BLDY=16, BLDCNT=0x00FF, PALRAM[0]=0), `FUN_08026074` (borra VRAM 96 KB), `FUN_08000FE8` (`*(0x030027D8)=0`), `FUN_0802F2DC` (19 slots × 0x60 + 9 palabras a 0), `FUN_08028DA4` (`fade_out_all`: estado 1, frames/timer 2). |
 | `FUN_08540B7C` | `src/intro.c` (`intro_common_update`) | Lógica | **Espera de frame** del estado 0, no una "actualización común". Verificado con objdump: `0x08540B7C` es ARM (`stmfd sp!, {lr}`) y `0x08540B80` es un bucle de sincronización (`0x080003E8` / `0x0802F354` / `0x080260A0` / `0x080004AC`, `ldmfd sp!, {pc}` en `0x08540B94`). **No es Thumb y no escribe BLD.** En el port el ritmo de frames lo marca la plataforma y el tick del motor de fundidos vive en ella. |
+| `FUN_08540B98` | `src/graphics.c` (`graphics_anim_oam_update`) | Gráficos/OAM/Animación | Función ARM tras `FUN_08540B7C`. Invocada desde `0x0853FFE4` (rama de rutina en familia `0x0853xxxx`). Lee `*0x030046F0+4` + tabla de bytes en `0x8540c00` (calculada con `pc+0x58`), ajusta con `*0x03004648==1`, suma a `*0x03004600`, combina con `*0x03004630>>8 & 0xFF`, limita a `0x78`, guarda en `*0x03004600` y `+4`. Actualiza contadores de animación/OAM en IWRAM. Portado parcial en PC. |
+
+### Auditoría `decomp/` vs `GAME_STATE_LIST`
+**Archivos:** `graphics_hide_oam_sprites.c` (0x08026E0C, portado), `save_system_init.c` (0x0801B27C, portado), `state_02_mode_select_loop.c` (0x0809D34C, **no portado**), `vram_and_callbacks_clear.c` (0x0802604C), `vram_unpack_tiles_dma3.c` (0x080260A0, analizado/parcial), `DECOMP_LIST.md` (pendiente STATE 1 Thumb).
+
+**Vacíos prioritarios:**
+- `0x080A39F4`–`0x080A3EB0` (STATE 1 handler Thumb, literal pools) - **ALTA**
+- `0x0809D34C` (STATE 2) - **MEDIA**
+- `0x080A5670` (STATE 9) - **MEDIA**
+- Widgets `0x08098720/0x080988D0/0x08098A84/0x08098D00` - **MEDIA**
+
+**Checklist:**
+- [ ] Desensamblar Thumb 0x080A39F4-0x080A3EB0 + literal pools
+- [ ] Registrar paletas/tilesets STATE 1 vía `hw_rom_register`
+- [ ] Cargar gráficos STATE 1 (tiles/mapa) + `fade_in_all()`
+- [ ] Input menú para transiciones
+- [ ] Portar STATE 2 usando `decomp/state_02_mode_select_loop.c`
+- [ ] Completar OAM/menu buffers
+
+**Añadido hoy:** `graphics_oam_copy_buffer()`, `graphics_anim_oam_update()` con guards; STATE 1 CUSTOM init + `fade_in_all()`; input STATE 36→1; OAM buffers en memoria PC.
 | — (nuevo en PC) | `src/pc_main.c` (`render_bg0`) | Gráficos/Render | Renderizador de video del port PC: reproduce el BG0 del GBA desde `DISPCNT`/`BG0CNT` + VRAM + PAL RAM y convierte indexado → ARGB8888. Ver "Modelo de video medido del fondo 0". |
 
 ### Memoria mapeada (nueva capa)

@@ -43,6 +43,8 @@
 #include "memory.h"
 #include "intro.h"
 #include "fade.h"
+#include "graphics.h"
+#include "audio.h"
 
 #include <stddef.h>   // NULL
 
@@ -353,6 +355,27 @@ void states_run_custom_body(u32 index)
             // Estado 0: intro/logo (handler ROM 0x080A52E4).
             intro_state_body();
             break;
+        case GAME_STATE_1_TITLE_MENU: {
+            states_set_current(GAME_STATE_1_TITLE_MENU);
+            hw_gfx_reg_write16(REG_DISPCNT, 0x0040u);
+            hw_mem_write32(0x030027B0u, 0u);
+            hw_mem_write32(0x030044F0u, 0u);
+            fade_reset();
+            hw_memzero_blocks(BOOT_CLEAR_VRAM_BASE, BOOT_CLEAR_VRAM_WORDS);
+            hw_mem_write32(0x030027D8u, 0u);
+            // Intentar cargar paleta del menú
+            {
+                const void *pal = hw_rom_ptr(0x080A3F90u);
+                if (pal != NULL) {
+                    hw_gfx_dma3_copy(pal, GBA_PALRAM_BASE, 128u);
+                }
+            }
+            hw_gfx_reg_write16(REG_BG0CNT, 0x1F80u);
+            hw_gfx_reg_write16(REG_DISPCNT, 0x1140u);
+            audio_bgm_play(0u);
+            fade_in_all();
+            break;
+        }
 
         default:
             break;
