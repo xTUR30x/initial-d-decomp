@@ -1,3 +1,4 @@
+#include "menu.h"
 // ==============================================================================
 // src/states.c - Maquina de estados del juego (Game State Machine)
 // ------------------------------------------------------------------------------
@@ -377,6 +378,10 @@ void states_run_custom_body(u32 index)
             break;
         }
 
+        case GAME_STATE_21_STORY_SCENE: {
+            state_21_story_scene_init();
+            break;
+        }
         default:
             break;
     }
@@ -626,3 +631,7 @@ void hw_state_return_to_dispatcher(void)
 }
 
 #endif // TARGET_GBA
+#include "story.h"
+
+extern void state_21_story_scene_init(void);
+extern void state_21_story_scene_update(void);
